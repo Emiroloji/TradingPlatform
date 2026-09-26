@@ -1,0 +1,180 @@
+markets:
+  bist:
+    enabled: true
+    universe: data/universe/bist100.csv
+    benchmark: XU100.IS
+    suffix: ".IS"
+    currency: TRY
+    fx: "USDTRY=X"         # USD dönüşümü: rejim (XU100/USDTRY) ve likidite eşiği
+    news_locale: "hl=tr&gl=TR&ceid=TR:tr"
+  us:
+    enabled: true
+    universe: data/universe/sp500.csv
+    benchmark: "^GSPC"
+    suffix: ""
+    currency: USD
+    fx: null               # zaten USD
+    news_locale: "hl=en-US&gl=US&ceid=US:en"
+
+data:
+  history_years: 7
+  interval: 1d
+  storage_dir: storage
+  quality:
+    max_missing_ratio: 0.05       # beklenen işlem günlerinin en fazla bu oranı eksik olabilir
+    max_zero_volume_ratio: 0.05   # sıfır hacimli gün oranı üst sınırı
+    max_abs_daily_return: 0.25    # bunu aşan günlük hareket işaretlenir
+    jump_excludes:                # işaretlenen sıçrama hisseyi dışlasın mı (piyasa bazında)
+      bist: true                  # BIST taban/tavan ±%10 → %25 üstü = bedelsiz/bölünme veri hatası
+      us: false                   # ABD'de fiyat limiti yok; >%25 gerçek hareketler (bilanço, 2020) — yalnızca uyarı
+    exclude_on_issues: true       # eşikleri aşan hisse temizlenmiş veriden dışlanır
+
+liquidity:
+  # 20 günlük ortalama ciro, USD cinsinden (TL ciro günlük kurla çevrilir; sabit TL eşiği enflasyonla anlamsızlaşır)
+  min_avg_turnover_usd:
+    bist: 3_000_000
+    us: 20_000_000
+  lookback_days: 20
+
+# Özellikler ham OHLC ile hesaplanır; adj_close kullanılmaz (temettü düzeltmesi = look-ahead).
+features:
+  trend:
+    ema_periods: [20, 50, 200]
+    adx_period: 14
+    adx_threshold: 25            # ADX bunun üstünde ve +DI > -DI ise güçlü yükseliş trendi
+  momentum:
+    rsi_period: 14
+    rsi_bull_min: 50             # RSI bu aralıktaysa olumlu: [rsi_bull_min, rsi_overbought]
+    rsi_overbought: 70
+    macd_fast: 12
+    macd_slow: 26
+    macd_signal: 9
+    stoch_k: 14
+    stoch_d: 3
+    stoch_smooth_k: 3
+    stoch_overbought: 80
+    roc_period: 10
+  volume:
+    obv_ema_period: 20
+    cmf_period: 20
+    avg_volume_period: 20
+    volume_ratio_min: 1.0        # hacim / 20g ort. hacim en az bu kadar olmalı
+  volatility:
+    bb_period: 20
+    bb_std: 2.0
+    baseline_days: 120           # ATR% ve Bollinger genişliği bu dönemin medyanıyla kıyaslanır
+  accumulation:
+    window_days: 20              # toplama bandı penceresi
+    baseline_days: 120           # bant ve hacim kıyas dönemi
+    range_contraction_ratio: 0.8 # bant genişliği < geçmiş medyanın bu katı → daralma
+    volume_increase_ratio: 1.2   # bant içi ort. hacim > önceki dönem ort. hacminin bu katı
+    divergence_max_price_return: 0.03  # OBV/AD yükselirken fiyat getirisi bunu aşmamalı
+    spring_lookback_days: 5      # son N günde bant altına iğne + geri dönüş aranır
+    score_by_conditions: [0, 20, 60, 80, 100]  # sağlanan koşul sayısı (0..4) → skor
+  regime:                        # BIST'te endeks USD'ye çevrilerek hesaplanır (markets.bist.fx)
+    ema_period: 200
+    slope_days: 20
+    adx_period: 14
+    adx_min: 20                  # ADX bunun altındaysa trend yok → yatay
+  relative:
+    periods: [20, 60, 120]       # endekse göre fazla getiri pencereleri
+
+scoring:
+  # Toplam skora giren kategoriler; ağırlıklar bunlar üzerinde yeniden normalize edilir.
+  # fundamental: veri kaynağı yok, sentiment: Faz 4 (Gemini). Veri gelince listeye eklenir.
+  enabled_categories: [trend, momentum, volume, volatility]
+  weights:
+    trend: 25
+    momentum: 20
+    volume: 20
+    volatility: 15
+    fundamental: 10
+    sentiment: 10
+
+signal:
+  mode: conservative
+  min_total_score: 70
+  min_accumulation_score: 60
+  min_probability: 0.65
+  allowed_regimes: [bull]
+  min_backtest_trades: 30
+
+label:
+  # trade_outcome: backtest motorunun aynı kurallarla açacağı işlem endekse göre kârlı mı (varsayılan)
+  # triple_barrier: 20 gün içinde stop'a değmeden endeksi %3+ yendi mi (ilk dokunuş; FAZLAR ilk tanımı)
+  type: trade_outcome
+  min_trade_excess: 0.0        # trade_outcome: maliyetler dahil endekse göre fazla getiri bunu aşmalı
+  horizon_days: 20             # triple_barrier penceresi (trade_outcome backtest.max_holding_days kullanır)
+  target_excess_return: 0.03
+  use_stop_barrier: true
+
+model:
+  type: lightgbm
+  train_years: 3
+  test_months: 6
+  step_months: 6
+  first_test_start: "2023-07-01"  # = backtest.oos_start; baseline ve ML aynı OOS dönemde kıyaslanır
+  params:                          # basit model (KURALLAR §5): sığ ağaçlar, büyük yaprak örneklemi
+    num_leaves: 15
+    learning_rate: 0.05
+    n_estimators: 200
+    min_child_samples: 200
+    subsample: 0.8
+    subsample_freq: 1
+    colsample_bytree: 0.8
+    random_state: 42
+    verbose: -1
+  min_fold_win_ratio: 0.6          # ML, OOS test dönemlerinin en az bu oranında baseline'dan iyi olmalı
+
+backtest:
+  commission: 0.002     # işlem başına, tek yön
+  slippage: 0.001
+  entry: next_open
+  target_r_multiple: 2.0     # hedef = giriş + R katı × (giriş − stop)
+  max_holding_days: 20       # işlem günü; dolunca kapanıştan çıkılır
+  oos_start: "2023-07-01"    # out-of-sample başlangıcı = ML ilk walk-forward test dönemi (veri başı + ısınma + 3 yıl eğitim)
+
+risk:
+  capital: 100000
+  risk_per_trade: 0.01
+  atr_period: 14
+  atr_stop_multiplier: 2.0
+  max_positions: 5
+  max_per_sector: 2
+
+gemini:
+  model: "gemini-3.8-flash"   # sabit sürüm (-latest takma adları sessizce değişir); ücretsiz kotaya uygun flash
+  fallback_models: ["gemini-3.5-flash"]   # ana model 503/kota hatası verirse sırayla denenir
+  timeout_seconds: 30
+  max_retries: 2
+  retry_backoff_seconds: 2
+  cache_days: 7
+  temperature: 0
+  # KURALLAR §6 / FAZLAR Faz 4 veto nedenleri
+  veto_categories:
+    - SPK işlemi veya yaptırımı
+    - soruşturma (şirket veya yöneticileri)
+    - iflas, konkordato
+    - ağır dava
+    - bedelli sermaye artırımı
+    - işlem yasağı / devre kesici / brüt takas
+    - denetçi olumsuz görüşü, finansal tablo düzeltmesi
+  banned_phrases: [kesin, garanti]   # KURALLAR §1: kesinlik ifadesi yok
+
+# Haber kaynakları (KURALLAR §10: izin verilmeyen siteler kazınmaz; KAP'ın resmi API'si yok → kullanılmıyor)
+news:
+  sources: [yfinance, google_news_rss]
+  lookback_days: 7
+  max_items: 15
+  timeout_seconds: 15
+  google_news_rss_url: "https://news.google.com/rss/search?q={query}&{locale}"   # locale: markets.<piyasa>.news_locale
+  query_template: '"{name}" OR {ticker}'
+
+telegram:
+  max_message_chars: 4096      # Telegram Bot API tek mesaj üst sınırı
+  timeout_seconds: 30
+
+schedule:
+  bist_run_time: "18:45"   # Europe/Istanbul
+  us_run_time: "23:45"
+  timezone: Europe/Istanbul

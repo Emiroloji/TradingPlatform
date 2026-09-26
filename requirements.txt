@@ -1,0 +1,16 @@
+pandas
+numpy
+pyarrow
+yfinance
+pandas-ta
+lightgbm
+scikit-learn
+google-genai
+pydantic
+pyyaml
+python-dotenv
+apscheduler
+streamlit
+plotly
+python-telegram-bot
+pytest

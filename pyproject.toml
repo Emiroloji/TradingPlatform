@@ -1,0 +1,8 @@
+[project]
+name = "borsa"
+version = "0.1.0"
+description = "Temkinli hisse tarama ve sinyal sistemi (karar destek aracı)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

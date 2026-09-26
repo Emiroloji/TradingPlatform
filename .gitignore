@@ -1,0 +1,22 @@
+# Secrets (KURALLAR §10)
+.env
+
+# Runtime data, cache, logs (MIMARI §2)
+storage/*
+!storage/.gitkeep
+
+# Saved model versions
+model/registry/*
+!model/registry/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

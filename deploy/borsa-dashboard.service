@@ -1,0 +1,17 @@
+# Streamlit paneli — YALNIZCA 127.0.0.1'e bağlanır (Streamlit'in kendi şifre koruması yok).
+# Erişim: ssh -L 8501:127.0.0.1:8501 KULLANICI@SUNUCU  → tarayıcıda http://127.0.0.1:8501
+# ya da önüne şifreli (basic auth + HTTPS) bir nginx koy.
+[Unit]
+Description=Borsa - Streamlit paneli
+After=network-online.target
+
+[Service]
+Type=simple
+User=KULLANICI
+WorkingDirectory=/opt/borsa
+ExecStart=/opt/borsa/.venv/bin/streamlit run report/dashboard.py --server.headless true --server.address 127.0.0.1 --server.port 8501
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

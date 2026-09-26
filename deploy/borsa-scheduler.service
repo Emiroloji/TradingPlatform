@@ -1,0 +1,19 @@
+# Günlük akış zamanlayıcısı: hafta içi config.yaml'daki saatte `main.py run`
+# Kurulum: KULLANICI ve /opt/borsa yollarını kendi sunucuna göre değiştir, sonra:
+#   sudo cp deploy/borsa-scheduler.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now borsa-scheduler
+[Unit]
+Description=Borsa - temkinli tarama zamanlayicisi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=KULLANICI
+WorkingDirectory=/opt/borsa
+ExecStart=/opt/borsa/.venv/bin/python main.py schedule
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
