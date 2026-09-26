@@ -6,7 +6,9 @@ model performance. Nothing here computes signals; it only displays what the dail
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -126,8 +128,24 @@ def model_tab(market: str) -> None:
     st.bar_chart(imp)
 
 
+def authorised() -> bool:
+    """Password gate when DASHBOARD_PASSWORD is set (Streamlit has no auth of its own)."""
+    expected = os.environ.get("DASHBOARD_PASSWORD", "")
+    if not expected or st.session_state.get("authorised"):
+        return True
+    entered = st.text_input("Panel şifresi", type="password")
+    if entered and hmac.compare_digest(entered.encode(), expected.encode()):
+        st.session_state["authorised"] = True
+        st.rerun()
+    elif entered:
+        st.error("Şifre hatalı.")
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title="Temkinli Hisse Tarama", layout="wide")
+    if not authorised():
+        return
     cfg = load_config()
     markets = list(cfg.enabled_markets())
     market = st.sidebar.selectbox("Piyasa", markets)

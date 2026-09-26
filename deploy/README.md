@@ -1,4 +1,36 @@
-# Sunucuya kurulum (Linux + systemd)
+# Sunucuya kurulum
+
+## A. Dokploy (önerilen)
+
+Depodaki `Dockerfile` + `docker-compose.yml` üç servis kurar: **db** (TimescaleDB, dışarı kapalı),
+**scheduler** (ilk açılışta `bootstrap`, sonra hafta içi günlük akış + aylık yeniden eğitim),
+**dashboard** (Streamlit, şifreli). Veriler adlandırılmış volume'larda kalıcıdır (yeniden deploy'da silinmez).
+
+1. Dokploy → **Projects** → yeni proje → **Create Service → Compose**.
+2. **Provider:** GitHub → depo `Emiroloji/TradingPlatform` (özel depo: Dokploy GitHub uygulamasına erişim ver),
+   branch `main`, **Compose Path** `./docker-compose.yml`.
+3. **Environment** sekmesi (değerler depoya girmez):
+   ```
+   GEMINI_API_KEY=...
+   TELEGRAM_BOT_TOKEN=...
+   TELEGRAM_CHAT_ID=...
+   SEC_USER_AGENT=TradingPlatform ad@eposta.com
+   POSTGRES_PASSWORD=uzun-rastgele-bir-şifre
+   DASHBOARD_PASSWORD=panel-şifresi
+   REDDIT_CLIENT_ID=            # isteğe bağlı
+   REDDIT_CLIENT_SECRET=        # isteğe bağlı
+   ```
+4. **Deploy**. İlk açılışta scheduler bootstrap'i çalıştırır (~10 dk: BIST + S&P 500, SEC Form 4 ve 13F).
+   Loglarda `Scheduled bist: weekdays 18:45` görünce hazırdır.
+5. **Domains** sekmesi → servis `dashboard`, port `8501`, HTTPS açık → alan adın. Panel şifreyi sorar.
+6. Kontrol: Telegram'a hafta içi 18:45'ten sonra BIST, 23:45'ten sonra ABD raporu gelir.
+
+Kaynak ihtiyacı: bootstrap ve ABD özellik hesabı sırasında ~2–3 GB RAM; disk ~3 GB (veri + veritabanı).
+Yerelde doğrulandı: imaj derleniyor, bootstrap yereldeki sonuçları birebir üretiyor, 130 test konteynerde geçiyor.
+
+---
+
+## B. Elle kurulum (Linux + systemd)
 
 ## 1. Kod ve ortam
 ```bash

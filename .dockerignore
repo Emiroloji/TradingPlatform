@@ -1,0 +1,10 @@
+.venv/
+.git/
+.env
+storage/
+model/registry/*
+!model/registry/.gitkeep
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store

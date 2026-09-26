@@ -1,0 +1,59 @@
+# Dokploy (Compose) için: Git deposundan bu dosyayla kurulur.
+# Gizli değerler Dokploy → Environment sekmesinden verilir (.env depoya girmez).
+# Panel: Dokploy → Domains → servis "dashboard", port 8501.
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: borsa
+      POSTGRES_USER: borsa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD gerekli}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U borsa -d borsa"]
+      interval: 10s
+      retries: 10
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    # ilk açılışta veri/model yoksa üretir, sonra hafta içi günlük akış + aylık yeniden eğitim
+    command: ["sh", "-c", "python main.py bootstrap && python main.py schedule"]
+    environment: &app_env
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY gerekli}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:?SEC_USER_AGENT gerekli (Ad eposta)}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      DATABASE_URL: postgresql://borsa:${POSTGRES_PASSWORD}@db:5432/borsa
+      TZ: Europe/Istanbul
+    volumes:
+      - storage:/app/storage
+      - registry:/app/model/registry
+    depends_on:
+      db:
+        condition: service_healthy
+
+  dashboard:
+    build: .
+    restart: unless-stopped
+    command: ["streamlit", "run", "report/dashboard.py", "--server.headless", "true",
+              "--server.address", "0.0.0.0", "--server.port", "8501"]
+    environment:
+      <<: *app_env
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?DASHBOARD_PASSWORD gerekli (panel şifresi)}
+    expose:
+      - "8501"
+    volumes:
+      - storage:/app/storage:ro
+      - registry:/app/model/registry:ro
+    depends_on:
+      - scheduler
+
+volumes:
+  pgdata:
+  storage:
+  registry:

@@ -58,6 +58,12 @@ def setup_logging(cfg: Config) -> None:
     # HTTP client libraries log request URLs at INFO; the Telegram Bot API URL contains the token
     for noisy in ("httpx", "httpcore", "telegram", "urllib3", "google_genai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # one persistent yfinance timezone cache: avoids threads racing to create ~/.cache in containers
+    import yfinance as yf
+
+    tz_cache = cfg.storage_path / "cache" / "yfinance"
+    tz_cache.mkdir(parents=True, exist_ok=True)
+    yf.set_tz_cache_location(str(tz_cache))
 
 
 def last_complete_session(cfg: Config, market: str) -> date:
@@ -668,6 +674,22 @@ def cmd_db_sync(cfg: Config) -> None:
         sync_market(cfg, market)
 
 
+def cmd_bootstrap(cfg: Config) -> None:
+    """First start on a fresh server: build data, features, setup backtest and model for every
+    market that has no features yet. Does nothing on later restarts."""
+    for market in cfg.enabled_markets():
+        if store.features_path(cfg, market).exists():
+            logger.info("[%s] bootstrap: features exist, skipping", market)
+            continue
+        logger.info("[%s] bootstrap: building data, features, backtests and model", market)
+        fetch_market(cfg, market)
+        features_market(cfg, market)
+        backtest_market(cfg, market)
+        train_market(cfg, market)
+        ml_backtest_market(cfg, market)
+        sync_database(cfg, market)
+
+
 def cmd_run(cfg: Config) -> None:
     for market in cfg.enabled_markets():
         run_market(cfg, market)
@@ -731,6 +753,7 @@ COMMANDS = {
     "drift": cmd_drift,
     "retrain": cmd_retrain,
     "db-sync": cmd_db_sync,
+    "bootstrap": cmd_bootstrap,
 }
 
 
