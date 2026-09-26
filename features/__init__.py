@@ -9,6 +9,7 @@ import pandas as pd
 from config import Config
 from features.accumulation import accumulation_conditions, accumulation_score
 from features.indicators import compute_indicators
+from features.insider import coverage_end, insider_features
 from features.liquidity import liquidity
 from features.regime import market_regime
 from features.relative import relative_strength
@@ -35,9 +36,16 @@ def in_usd(bars: pd.DataFrame, fx: pd.Series | None) -> pd.DataFrame:
 
 
 def ticker_features(
-    bars: pd.DataFrame, bench: pd.DataFrame, regime: pd.Series, cfg: Config, market: str, fx: pd.Series | None = None
+    bars: pd.DataFrame,
+    bench: pd.DataFrame,
+    regime: pd.Series,
+    cfg: Config,
+    market: str,
+    fx: pd.Series | None = None,
+    insider: tuple[pd.DataFrame, pd.Timestamp] | None = None,
 ) -> pd.DataFrame:
-    """All features for one ticker; `bars` and `bench` are date-indexed OHLCV, `fx` a close series."""
+    """All features for one ticker; `bars` and `bench` are date-indexed OHLCV, `fx` a close series,
+    `insider` this ticker's Form 4 transactions and the data coverage end."""
     out = pd.concat(
         [
             compute_indicators(bars, cfg),
@@ -48,6 +56,9 @@ def ticker_features(
         ],
         axis=1,
     )
+    if insider is not None:
+        tx, covered_until = insider
+        out = out.join(insider_features(out.index, tx, out["avg_turnover"], cfg, covered_until))
     out["fundamental_score"] = float("nan")  # no fundamental data source yet
     # regime is a benchmark property; carry its last known value onto the stock's dates
     out["regime"] = last_known(regime, out.index)
@@ -55,18 +66,26 @@ def ticker_features(
 
 
 def compute_features(
-    prices: pd.DataFrame, benchmark: pd.DataFrame, cfg: Config, market: str, fx: pd.DataFrame | None = None
+    prices: pd.DataFrame,
+    benchmark: pd.DataFrame,
+    cfg: Config,
+    market: str,
+    fx: pd.DataFrame | None = None,
+    insider: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format prices (many tickers) + benchmark bars (+ FX bars) -> features table (MIMARI §4).
 
     With `fx`, the regime is computed on the benchmark in USD and liquidity is measured in USD.
+    With `insider` (Form 4 transactions with a `ticker` column), insider features are added.
     """
     bench = _by_date(benchmark)
     fx_close = None if fx is None else _by_date(fx)["close"]
     regime = market_regime(in_usd(bench, fx_close), cfg)
     frames = []
+    covered_until = coverage_end(insider) if insider is not None else None
     for ticker, bars in prices.groupby("ticker", sort=True):
-        feats = ticker_features(_by_date(bars), bench, regime, cfg, market, fx_close)
+        tx = None if insider is None else (insider[insider["ticker"] == ticker], covered_until)
+        feats = ticker_features(_by_date(bars), bench, regime, cfg, market, fx_close, tx)
         feats.insert(0, "ticker", ticker)
         frames.append(feats)
     table = pd.concat(frames).rename_axis("date").reset_index()

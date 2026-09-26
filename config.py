@@ -180,6 +180,15 @@ class NewsConfig(_Section):
     query_template: str
 
 
+class InsiderConfig(_Section):
+    markets: list[str]
+    dataset_url: str
+    request_interval_seconds: float
+    timeout_seconds: int
+    window_days: int
+    cluster_min_buyers: int
+
+
 class TelegramConfig(_Section):
     max_message_chars: int
     timeout_seconds: int
@@ -204,6 +213,7 @@ class Config(_Section):
     risk: RiskConfig
     gemini: GeminiConfig
     news: NewsConfig
+    insider: InsiderConfig
     telegram: TelegramConfig
     schedule: ScheduleConfig
 

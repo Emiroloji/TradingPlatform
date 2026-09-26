@@ -170,6 +170,16 @@ news:
   google_news_rss_url: "https://news.google.com/rss/search?q={query}&{locale}"   # locale: markets.<piyasa>.news_locale
   query_template: '"{name}" OR {ticker}'
 
+# SEC EDGAR içeriden alım/satım (Form 4) — ücretsiz resmî veri; yalnızca ABD.
+# Kimlik: .env SEC_USER_AGENT ("Ad eposta"), SEC adil kullanım politikası gereği zorunlu.
+insider:
+  markets: [us]
+  dataset_url: "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{quarter}_form345.zip"
+  request_interval_seconds: 0.5   # SEC sınırı saniyede 10 istek; biz çok altında kalırız
+  timeout_seconds: 180
+  window_days: 90                 # geriye dönük pencere (takvim günü)
+  cluster_min_buyers: 2           # "küme alım": pencerede en az bu kadar farklı içeriden alıcı
+
 telegram:
   max_message_chars: 4096      # Telegram Bot API tek mesaj üst sınırı
   timeout_seconds: 30

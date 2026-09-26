@@ -97,6 +97,11 @@ def fetch_market(cfg: Config, market: str) -> None:
     raw = store.read_prices(store.raw_dir(cfg, market), symbols)
     raw = raw[raw["date"] >= full_start]
     cleaned, report = clean_prices(raw, cfg, market, price_only=frozenset(fx))
+    if market in cfg.insider.markets:
+        from data.insider import update_insider
+
+        ciks = set(load_universe(mcfg, cfg)["cik"].dropna().astype(int))
+        update_insider(cfg, market, ciks, full_start.date(), end)
     for required in [mcfg.benchmark, *fx]:
         if required in report.excluded or required not in set(raw["ticker"]):
             raise RuntimeError(f"{required} failed quality checks; see report")
@@ -127,7 +132,16 @@ def features_market(cfg: Config, market: str) -> None:
     is_bench = prices["ticker"] == mcfg.benchmark
     is_fx = prices["ticker"] == mcfg.fx
     fx = prices[is_fx] if mcfg.fx else None
-    table = compute_features(prices[~is_bench & ~is_fx], prices[is_bench], cfg, market, fx)
+    insider = None
+    if market in cfg.insider.markets:
+        from data.insider import read_insider
+
+        insider = read_insider(cfg, market)
+        if insider is not None:
+            # issuer-level filings apply to every share class of the company (GOOGL/GOOG, FOXA/FOX, ...)
+            symbols = load_universe(mcfg, cfg)[["cik", "symbol"]].rename(columns={"symbol": "ticker"})
+            insider = insider.astype({"cik": int}).merge(symbols, on="cik")
+    table = compute_features(prices[~is_bench & ~is_fx], prices[is_bench], cfg, market, fx, insider)
     path = store.write_features(table, cfg, market)
 
     latest = table[table["date"] == table["date"].max()]
