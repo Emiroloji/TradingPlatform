@@ -201,6 +201,12 @@ institutional:
   filing_deadline_days: 45        # 13F yasal süre: çeyrek sonu + 45 gün
   first_period: "2019-03-31"      # değişim hesabı için bir önceki çeyrek de gerekir
 
+# PostgreSQL + TimescaleDB: kalıcı analitik veritabanı (parquet çalışma katmanı olarak kalır).
+# Bağlantı: .env DATABASE_URL. Kurulum: deploy/docker-compose.yml
+database:
+  enabled: true
+  hypertable_chunk_days: 90        # TimescaleDB zaman dilimi (chunk) aralığı
+
 telegram:
   max_message_chars: 4096      # Telegram Bot API tek mesaj üst sınırı
   timeout_seconds: 30

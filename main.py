@@ -618,10 +618,30 @@ def run_market(cfg: Config, market: str) -> Path:
         path.write_text(text + "\n", encoding="utf-8")
         sent = send(text, cfg)
         logger.info("[%s] daily run done: %d signals, report %s, telegram %s", market, len(signal_rows), path, sent)
+        sync_database(cfg, market)
         return path
     except Exception as exc:
         send_alert(f"{market.upper()} günlük akış '{step}' adımında durdu: {type(exc).__name__}: {str(exc)[:200]}", cfg)
         raise
+
+
+def sync_database(cfg: Config, market: str) -> None:
+    """Mirror to TimescaleDB; a database problem never stops the signal flow (alert only)."""
+    from data.db import sync_market
+    from report.telegram_bot import send_alert
+
+    try:
+        sync_market(cfg, market)
+    except Exception as exc:
+        logger.error("[%s] database sync failed: %s", market, exc)
+        send_alert(f"{market.upper()} veritabanı senkronizasyonu başarısız: {type(exc).__name__}", cfg)
+
+
+def cmd_db_sync(cfg: Config) -> None:
+    from data.db import sync_market
+
+    for market in cfg.enabled_markets():
+        sync_market(cfg, market)
 
 
 def cmd_run(cfg: Config) -> None:
@@ -686,6 +706,7 @@ COMMANDS = {
     "schedule": cmd_schedule,
     "drift": cmd_drift,
     "retrain": cmd_retrain,
+    "db-sync": cmd_db_sync,
 }
 
 

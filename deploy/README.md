@@ -15,7 +15,18 @@ python3 -m venv .venv
 chmod 600 .env
 ```
 
-## 3. Veri ve model (ilk kurulum)
+## 3. Veritabanı (PostgreSQL + TimescaleDB, ücretsiz)
+Parquet yerel çalışma katmanıdır; TimescaleDB kalıcı analitik veritabanıdır (her günlük akış sonunda senkronize edilir).
+`.env`: `POSTGRES_PASSWORD` ve `DATABASE_URL=postgresql://borsa:ŞİFRE@127.0.0.1:5432/borsa`.
+
+- Docker ile: `docker compose --env-file .env -f deploy/docker-compose.yml up -d` (yalnızca 127.0.0.1)
+- ya da paketle (Ubuntu): TimescaleDB'nin resmî apt deposundan `timescaledb-2-postgresql-16`, sonra
+  `timescaledb-tune --quiet --yes`, `CREATE ROLE borsa LOGIN PASSWORD '...'; CREATE DATABASE borsa OWNER borsa;`
+  ve `borsa` veritabanında `CREATE EXTENSION timescaledb;`
+
+İlk aktarım: `.venv/bin/python main.py db-sync`. Veritabanına erişilemezse günlük akış durmaz, Telegram'a uyarı gider.
+
+## 4. Veri ve model (ilk kurulum)
 İki seçenek:
 - **Taşı:** yereldeki `storage/` ve `model/registry/` klasörlerini sunucuya kopyala, ya da
 - **Yeniden üret:**
@@ -26,9 +37,10 @@ chmod 600 .env
 .venv/bin/python main.py train
 .venv/bin/python main.py backtest --ml   # modelin canlı onay kararı
 .venv/bin/python main.py run             # elle bir tam akış; Telegram'a rapor gelmeli
+.venv/bin/python main.py drift           # model kayması raporu
 ```
 
-## 4. Servisler
+## 5. Servisler
 `deploy/*.service` içindeki `KULLANICI` ve `/opt/borsa` değerlerini düzenle:
 ```bash
 sudo cp deploy/borsa-scheduler.service deploy/borsa-dashboard.service /etc/systemd/system/
@@ -39,7 +51,7 @@ journalctl -u borsa-scheduler -f            # canlı log
 ```
 Zamanlayıcı saat dilimini config'ten alır (Europe/Istanbul); sunucunun saat dilimi önemli değildir.
 
-## 5. Panel erişimi
+## 6. Panel erişimi
 Panel yalnızca `127.0.0.1:8501`'e bağlıdır. Kendi bilgisayarından:
 ```bash
 ssh -L 8501:127.0.0.1:8501 KULLANICI@SUNUCU
@@ -47,6 +59,6 @@ ssh -L 8501:127.0.0.1:8501 KULLANICI@SUNUCU
 ```
 Kalıcı web erişimi istenirse önüne HTTPS + şifreli (basic auth) nginx konmalı; paneli doğrudan 0.0.0.0'a açma.
 
-## 6. Faz 5 kabul kriteri
+## 7. Faz 5 kabul kriteri
 Sistem 2 hafta boyunca elle müdahalesiz çalışmalı ve her iş günü Telegram'a rapor gelmeli.
 Kontrol: `storage/reports/daily_bist_*.md` her iş günü için var mı, `storage/logs/borsa.log`'da ERROR var mı.

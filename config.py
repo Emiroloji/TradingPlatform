@@ -210,6 +210,11 @@ class InstitutionalConfig(_Section):
     first_period: str
 
 
+class DatabaseConfig(_Section):
+    enabled: bool
+    hypertable_chunk_days: int
+
+
 class TelegramConfig(_Section):
     max_message_chars: int
     timeout_seconds: int
@@ -238,6 +243,7 @@ class Config(_Section):
     news: NewsConfig
     insider: InsiderConfig
     institutional: InstitutionalConfig
+    database: DatabaseConfig
     telegram: TelegramConfig
     schedule: ScheduleConfig
 
