@@ -23,6 +23,7 @@ class MarketConfig(_Section):
     currency: str
     fx: str | None
     news_locale: str
+    subreddits: list[str]
 
 
 class QualityConfig(_Section):
@@ -181,7 +182,9 @@ class GeminiConfig(_Section):
 
 
 class NewsConfig(_Section):
-    sources: list[Literal["yfinance", "google_news_rss"]]
+    sources: list[Literal["yfinance", "google_news_rss", "reddit"]]
+    reddit_token_url: str
+    reddit_search_url: str
     lookback_days: int
     max_items: int
     timeout_seconds: int

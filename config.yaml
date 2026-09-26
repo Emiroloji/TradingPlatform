@@ -7,6 +7,7 @@ markets:
     currency: TRY
     fx: "USDTRY=X"         # USD dönüşümü: rejim (XU100/USDTRY) ve likidite eşiği
     news_locale: "hl=tr&gl=TR&ceid=TR:tr"
+    subreddits: []           # Türkçe borsa için ücretsiz ve izinli sosyal kaynak bulunamadı
   us:
     enabled: true
     universe: data/universe/sp500.csv
@@ -15,6 +16,7 @@ markets:
     currency: USD
     fx: null               # zaten USD
     news_locale: "hl=en-US&gl=US&ceid=US:en"
+    subreddits: [stocks, investing, StockMarket, wallstreetbets]
 
 data:
   history_years: 7
@@ -169,7 +171,11 @@ gemini:
 
 # Haber kaynakları (KURALLAR §10: izin verilmeyen siteler kazınmaz; KAP'ın resmi API'si yok → kullanılmıyor)
 news:
-  sources: [yfinance, google_news_rss]
+  # reddit: ücretsiz resmî API (kişisel "script" uygulaması; .env REDDIT_CLIENT_ID/SECRET).
+  # Kimlik yoksa sessizce atlanır. StockTwits (Cloudflare engeli) ve X (ücretli) kullanılmaz.
+  sources: [yfinance, google_news_rss, reddit]
+  reddit_token_url: "https://www.reddit.com/api/v1/access_token"
+  reddit_search_url: "https://oauth.reddit.com/r/{subs}/search"
   lookback_days: 7
   max_items: 15
   timeout_seconds: 15

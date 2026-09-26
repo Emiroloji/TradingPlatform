@@ -32,7 +32,9 @@ def institutional_features(dates: pd.DatetimeIndex, rows: pd.DataFrame, cfg: Con
     q = quarterly_changes(rows)
     deadline = pd.Timedelta(days=cfg.institutional.filing_deadline_days + 1)
     q["valid_until"] = q["period"] + pd.offsets.QuarterEnd(1) + deadline  # next quarter due by then
-    left = pd.DataFrame({"date": dates})
+    # parquet/pandas may carry different datetime resolutions (ms vs us); merge_asof needs one
+    left = pd.DataFrame({"date": dates.astype("datetime64[ns]")})
+    q["available_from"] = q["available_from"].astype("datetime64[ns]")
     joined = pd.merge_asof(left, q.sort_values("available_from"), left_on="date", right_on="available_from", direction="backward")
     fresh = joined["date"] < joined["valid_until"]
     for c in COLUMNS:

@@ -570,7 +570,7 @@ def run_market(cfg: Config, market: str) -> Path:
         vetoed, blocked, signal_rows = [], [], []
         if not candidates.empty:
             now = datetime.now(ZoneInfo(cfg.schedule.timezone))
-            checked = check_candidates(candidates, universe["name"].to_dict(), llm, cfg, now, mcfg.news_locale)
+            checked = check_candidates(candidates, universe["name"].to_dict(), llm, cfg, now, mcfg.news_locale, mcfg.subreddits)
             vetoed = [(r.ticker, r.veto_reason) for r in checked.itertuples() if r.gemini_veto]
             blocked = [(r.ticker, r.news_status) for r in checked.itertuples() if not r.gemini_passes and not r.gemini_veto]
             passed = checked[checked["gemini_passes"]]

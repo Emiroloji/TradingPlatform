@@ -66,3 +66,11 @@ def test_parse_dataset_filters(folder):
                    "A1\tABC123456\t9\tPRN\t\nA2\tABC123456\t50\tSH\t\n")
     out = parse_dataset(buf.getvalue(), {"ABC123456"})
     assert len(out) == 1 and out.iloc[0]["shares"] == 100 and out.iloc[0]["cusip"] == "ABC123456"
+
+
+def test_mixed_datetime_resolutions(cfg):
+    agg = _agg(cfg)
+    agg["available_from"] = agg["available_from"].astype("datetime64[us]")
+    dates = DATES.astype("datetime64[ms]")
+    out = institutional_features(pd.DatetimeIndex(dates), agg, cfg)
+    assert out["inst_filers"].notna().any()

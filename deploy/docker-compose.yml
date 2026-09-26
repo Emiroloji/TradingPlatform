@@ -1,0 +1,18 @@
+# TimescaleDB (PostgreSQL + zaman serisi uzantısı) — açık kaynak, ücretsiz.
+# Yalnızca 127.0.0.1'e bağlanır. Şifre .env'deki POSTGRES_PASSWORD'dan gelir:
+#   docker compose --env-file .env -f deploy/docker-compose.yml up -d
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: borsa-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: borsa
+      POSTGRES_USER: borsa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD .env içinde tanımlı olmalı}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - borsa-pgdata:/var/lib/postgresql/data
+volumes:
+  borsa-pgdata:

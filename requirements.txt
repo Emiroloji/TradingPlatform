@@ -14,3 +14,4 @@ streamlit
 plotly
 python-telegram-bot
 pytest
+psycopg[binary]

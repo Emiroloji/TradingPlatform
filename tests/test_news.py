@@ -41,3 +41,23 @@ def test_same_story_from_two_sources_counted_once(cfg, monkeypatch):
     monkeypatch.setattr(news, "from_google_news_rss", lambda t, n, c, loc: [_item("A", 25, "google_news_rss")])
     items, failed = collect_news("THYAO", "THY", "THYAO.IS", cfg, AS_OF, "hl=tr")
     assert len(items) == 1 and failed == []
+
+
+def test_reddit_skipped_without_credentials_is_not_a_failure(cfg, monkeypatch):
+    monkeypatch.setattr(news, "from_yfinance", lambda s, c: [_item("A", 25)])
+    monkeypatch.setattr(news, "from_google_news_rss", lambda t, n, c, loc: [])
+    monkeypatch.delenv("REDDIT_CLIENT_ID", raising=False)
+    monkeypatch.delenv("REDDIT_CLIENT_SECRET", raising=False)
+    monkeypatch.setattr(news, "load_dotenv", lambda *a, **k: None)
+    items, failed = collect_news("AAPL", "Apple", "AAPL", cfg, AS_OF, "hl=en", ["stocks"])
+    assert len(items) == 1 and failed == []
+
+
+def test_parse_reddit():
+    payload = {"data": {"children": [
+        {"data": {"title": "AAPL insider buying?", "selftext": "text", "permalink": "/r/stocks/x", "subreddit": "stocks",
+                  "created_utc": 1790000000}},
+        {"data": {"title": "", "created_utc": 1}},
+    ]}}
+    items = news.parse_reddit(payload)
+    assert len(items) == 1 and items[0].source == "reddit/r/stocks" and items[0].url.endswith("/r/stocks/x")

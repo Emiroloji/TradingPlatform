@@ -140,14 +140,20 @@ def log_veto(result: SentimentResult, items: list[NewsItem], cfg: Config, as_of:
 
 
 def check_candidates(
-    candidates: pd.DataFrame, names: dict[str, str], llm: LLM, cfg: Config, as_of: datetime, locale: str
+    candidates: pd.DataFrame,
+    names: dict[str, str],
+    llm: LLM,
+    cfg: Config,
+    as_of: datetime,
+    locale: str,
+    subreddits: list[str] | None = None,
 ) -> pd.DataFrame:
     """MIMARI §3 step 6: news + Gemini check for candidate rows (columns `ticker`), adding
     gemini_sentiment, gemini_veto, veto_reason, news_status, news_summary, news_count, gemini_passes."""
     rows = []
     for symbol in candidates["ticker"]:
         ticker = symbol.split(".")[0]
-        items, failed = news.collect_news(ticker, names.get(symbol, ticker), symbol, cfg, as_of, locale)
+        items, failed = news.collect_news(ticker, names.get(symbol, ticker), symbol, cfg, as_of, locale, subreddits)
         if failed and not items:
             result = SentimentResult(ticker=symbol, status="check_failed")  # could not read any news
         else:
