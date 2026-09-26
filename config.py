@@ -122,6 +122,7 @@ class SignalConfig(_Section):
     min_probability: float
     allowed_regimes: list[str]
     min_backtest_trades: int
+    observation: dict[str, list[str]]
 
 
 class LabelConfig(_Section):
@@ -208,6 +209,7 @@ class InstitutionalConfig(_Section):
     ftd_files_for_cusip_map: int
     filing_deadline_days: int
     first_period: str
+    max_filers_change: float
 
 
 class DatabaseConfig(_Section):

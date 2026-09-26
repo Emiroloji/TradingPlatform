@@ -46,3 +46,10 @@ def test_send_without_token_is_skipped(cfg, monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "")
     monkeypatch.setattr("report.telegram_bot.load_dotenv", lambda *a, **k: None)
     assert send("merhaba", cfg) is False
+
+
+def test_observation_section_is_labelled_not_live():
+    text = build_daily_message(_ctx(observations={"kurumsal_toplama": ["AAPL", "MSFT"]},
+                                    observation_perf={"kurumsal_toplama": {"signals": 2, "closed": 0}}))
+    assert "Gözlem modu — kurumsal_toplama (CANLI SİNYAL DEĞİL" in text
+    assert "AAPL, MSFT" in text and "Bugün temkinli sinyal yok." in text

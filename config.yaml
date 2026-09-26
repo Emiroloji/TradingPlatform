@@ -100,6 +100,11 @@ signal:
   min_probability: 0.65
   allowed_regimes: [bull]
   min_backtest_trades: 30
+  # Gözlem modu: canlı sinyal DEĞİL; kurulumlar ileriye dönük izlenir, sonuçları günlüğe "gözlem" olarak yazılır.
+  # Kurallar signals/filter.py OBSERVATION_RULES içinde; baseline kurallarına ek koşul olarak uygulanır.
+  observation:
+    us: [kurumsal_toplama]
+    bist: []
 
 label:
   # trade_outcome: backtest motorunun aynı kurallarla açacağı işlem endekse göre kârlı mı (varsayılan)
@@ -200,6 +205,8 @@ institutional:
   ftd_files_for_cusip_map: 6      # CUSIP↔hisse kodu eşlemesi için son N FTD dosyası (SEC, ücretsiz)
   filing_deadline_days: 45        # 13F yasal süre: çeyrek sonu + 45 gün
   first_period: "2019-03-31"      # değişim hesabı için bir önceki çeyrek de gerekir
+  max_filers_change: 0.5          # sahip sayısı çeyrekte ±%50'den fazla değişirse CUSIP kırılması (IPO, birleşme,
+                                  # merkez taşıma) say: o çeyreğin değişimleri karşılaştırılamaz (NaN)
 
 # PostgreSQL + TimescaleDB: kalıcı analitik veritabanı (parquet çalışma katmanı olarak kalır).
 # Bağlantı: .env DATABASE_URL. Kurulum: deploy/docker-compose.yml

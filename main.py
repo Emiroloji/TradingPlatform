@@ -24,7 +24,7 @@ from features import compute_features
 from model.labels import make_labels_frame
 from model.predict import load_oos_predictions
 from model.train import registry_for, save_artifact, set_approval, train_walk_forward
-from signals.filter import apply_conservative_filter, ml_signals, rule_based_signals, setup_ok
+from signals.filter import apply_conservative_filter, ml_signals, observation_candidates, rule_based_signals, setup_ok
 
 logger = logging.getLogger("borsa")
 
@@ -501,11 +501,19 @@ def _ml_report(cfg, market, version, runs, table, checks, approved, win_ratio, t
     return "\n".join(lines) + "\n"
 
 
-LIMITATIONS = [
-    "Survivorship bias: geçmiş endeks üyeliği verisi yok; evren bugünkü likit hisselerden oluşan vekil listedir.",
-    "KAP bildirimleri doğrudan okunmuyor (resmi açık API yok, ücretli lisans yok); yalnızca haberlere yansıdığı kadar.",
-    "Temel (bilanço) verisi yok; skor teknik göstergelerden oluşur.",
-]
+LIMITATIONS = {
+    "bist": [
+        "Survivorship bias: geçmiş endeks üyeliği verisi yok; evren bugünkü likit hisselerden oluşan vekil listedir.",
+        "KAP bildirimleri doğrudan okunmuyor (resmi açık API yok, ücretli lisans yok); yalnızca haberlere yansıdığı kadar.",
+        "AKD/takas verisi yok (ücretli); kurumsal toplama hacim/OBV göstergeleriyle tahmin edilir.",
+        "Temel (bilanço) verisi yok; skor teknik göstergelerden oluşur.",
+    ],
+    "us": [
+        "Survivorship bias: S&P 500'ün bugünkü bileşimi kullanılır; geçmiş üyelik verisi yok.",
+        "SEC Form 4 ve 13F toplu verileri çeyrek sonrası yayınlanır; güncel çeyrek 'bilinmiyor' sayılır.",
+        "Temel (bilanço) verisi yok; skor teknik göstergelerden oluşur.",
+    ],
+}
 
 
 def _ml_state(market: str) -> tuple[bool, str, object]:
@@ -591,6 +599,20 @@ def run_market(cfg: Config, market: str) -> Path:
                 )
                 signal_rows.append((r, row, write_commentary(row, llm, cfg)))
 
+        # observation-mode setups: tracked in the journal, never reported as signals, no Gemini
+        step = "gözlem modu"
+        observed = observation_candidates(today, cfg, market) if not stale else today.iloc[0:0]
+        observations = {name: [] for name in cfg.signal.observation.get(market, [])}
+        if not observed.empty:
+            close = prices[prices["date"] == last_day].set_index("ticker")["close"]
+            obs = observed.assign(entry_ref=observed["ticker"].map(close))
+            obs["stop"] = obs["entry_ref"] - cfg.risk.atr_stop_multiplier * obs["atr"]
+            for name, group in obs.groupby("setup"):
+                observations[name] = sorted(t.split(".")[0] for t in group["ticker"])
+                cols = ["date", "ticker", "setup", "total_score", "accumulation_score", "regime", "entry_ref", "stop",
+                        *[c for c in ("inst_filers_chg", "inst_shares_chg") if c in group]]
+                record_signals(group[cols], cfg, market, mode="gözlem")
+
         # [9] journal + report + Telegram
         step = "rapor"
         record_signals(
@@ -611,7 +633,9 @@ def run_market(cfg: Config, market: str) -> Path:
             as_of=last_day.date(), market=market, regime=today["regime"].iloc[0] if len(today) else None,
             funnel=funnel, setup=setup, setup_note=setup_ok(setup, cfg)[1], ml_note=ml_note,
             signals=[(row, text) for _, row, text in signal_rows], vetoed=vetoed, news_blocked=blocked,
-            live=live_performance(read_journal(cfg, market)), limitations=LIMITATIONS,
+            live=live_performance(read_journal(cfg, market)), limitations=LIMITATIONS.get(market, []),
+            observations=observations,
+            observation_perf={n: live_performance(read_journal(cfg, market), mode="gözlem", setup=n) for n in observations},
         )
         text = build_daily_message(ctx)
         path = store.reports_dir(cfg) / f"daily_{market}_{last_day.date()}.md"

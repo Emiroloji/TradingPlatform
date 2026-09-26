@@ -74,3 +74,25 @@ def test_mixed_datetime_resolutions(cfg):
     dates = DATES.astype("datetime64[ms]")
     out = institutional_features(pd.DatetimeIndex(dates), agg, cfg)
     assert out["inst_filers"].notna().any()
+
+
+def test_split_adjusted_share_change(cfg):
+    from data.institutional import add_split_factors
+
+    agg = _agg(cfg).assign(ticker="X")
+    splits = pd.DataFrame({"date": [pd.Timestamp("2024-02-20")], "ticker": ["X"], "ratio": [10.0]})
+    agg.loc[agg["period"] == pd.Timestamp("2024-03-31"), "shares"] *= 10  # 10-for-1: same stake, 10x shares
+    adjusted = add_split_factors(agg, splits)
+    assert adjusted["split_factor"].tolist() == [1.0, 10.0]
+    out = institutional_features(DATES, adjusted, cfg)
+    assert abs(out.loc["2024-05-16", "inst_shares_chg"] - 0.5) < 1e-9  # the real +50%, not +1400%
+
+
+def test_cusip_break_is_not_compared(cfg):
+    h = _holdings([
+        ("2023-12-31", "2024-02-01", 1, "X", 100),  # only one filer knew the new CUSIP
+        *[("2024-03-31", "2024-05-01", i, "X", 100) for i in range(1, 11)],
+    ])
+    out = institutional_features(DATES, aggregate(h, cfg), cfg)
+    row = out.loc["2024-05-16"]
+    assert row["inst_filers"] == 10 and pd.isna(row["inst_filers_chg"]) and pd.isna(row["inst_shares_chg"])

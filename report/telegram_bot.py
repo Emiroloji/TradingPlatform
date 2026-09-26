@@ -36,6 +36,8 @@ class DailyContext:
     news_blocked: list[tuple[str, str]] = field(default_factory=list)  # (ticker, status)
     live: dict = field(default_factory=dict)
     limitations: list[str] = field(default_factory=list)
+    observations: dict[str, list[str]] = field(default_factory=dict)  # setup -> today's tickers
+    observation_perf: dict[str, dict] = field(default_factory=dict)  # setup -> live_performance
 
 
 def _signal_block(s: SignalRow, commentary: str, setup: dict | None) -> list[str]:
@@ -84,6 +86,17 @@ def build_daily_message(ctx: DailyContext) -> str:
         )
     elif ctx.live:
         lines.append(f"Canlı takip: {ctx.live.get('signals', 0)} sinyal, henüz kapanan yok")
+    for setup, tickers in ctx.observations.items():
+        perf = ctx.observation_perf.get(setup, {})
+        lines += ["", f"Gözlem modu — {setup} (CANLI SİNYAL DEĞİL, ileriye dönük test):"]
+        lines.append(f"- Bugün koşulu sağlayan: {', '.join(tickers) if tickers else 'yok'}")
+        if perf.get("closed"):
+            lines.append(
+                f"- Gözlem sonuçları: {perf['closed']}/{perf['signals']} kapandı, endekse göre expectancy "
+                f"{fmt_pct(perf['expectancy_excess'], signed=True, decimals=2)} / işlem, kazanma {fmt_pct(perf['win_rate'])}"
+            )
+        else:
+            lines.append(f"- Gözlem sonuçları: {perf.get('signals', 0)} kayıt, henüz kapanan yok")
     if ctx.limitations:
         lines.append("Kısıtlar:")
         lines += [f"- {x}" for x in ctx.limitations]

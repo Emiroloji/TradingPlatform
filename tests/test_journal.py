@@ -42,3 +42,13 @@ def test_outcome_filled_only_after_holding_window(local):
 
     perf = live_performance(read_journal(local, "bist"))
     assert perf["signals"] == 2 and perf["closed"] == 1
+
+
+def test_live_and_observation_tracked_separately(local):
+    day = pd.Timestamp("2024-01-10")
+    record_signals(_signal(day), local, "us")
+    assert record_signals(_signal(day).assign(setup="kurumsal_toplama"), local, "us", mode="gözlem") == 1
+    j = read_journal(local, "us")
+    assert sorted(j["mode"]) == ["canlı", "gözlem"]
+    assert live_performance(j)["signals"] == 1
+    assert live_performance(j, mode="gözlem", setup="kurumsal_toplama")["signals"] == 1

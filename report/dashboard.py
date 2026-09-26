@@ -43,15 +43,20 @@ def signals_tab(cfg, market: str) -> None:
     if journal.empty:
         st.write("Henüz verilmiş sinyal yok.")
         return
-    perf = live_performance(journal)
-    cols = st.columns(4)
-    cols[0].metric("Sinyal", perf["signals"])
-    cols[1].metric("Kapanan", perf["closed"])
-    if perf["closed"]:
-        cols[2].metric("Kazanma oranı", f"%{perf['win_rate'] * 100:.1f}")
-        cols[3].metric("Endekse göre expectancy", f"{perf['expectancy_excess'] * 100:+.2f}%")
-    show = ["date", "ticker", "total_score", "accumulation_score", "regime", "entry_ref", "stop", "position_size",
-            "outcome_return", "outcome_relative", "outcome_exit_date"]
+    modes = journal.assign(mode=journal.get("mode", "canlı"), setup=journal.get("setup", "baseline"))
+    for (mode, setup), _ in modes.groupby(["mode", "setup"]):
+        perf = live_performance(modes, mode=mode, setup=setup)
+        label = "CANLI" if mode == "canlı" else "GÖZLEM (canlı sinyal değil)"
+        st.markdown(f"**{label} — {setup}**")
+        cols = st.columns(4)
+        cols[0].metric("Kayıt", perf["signals"])
+        cols[1].metric("Kapanan", perf["closed"])
+        if perf["closed"]:
+            cols[2].metric("Kazanma oranı", f"%{perf['win_rate'] * 100:.1f}")
+            cols[3].metric("Endekse göre expectancy", f"{perf['expectancy_excess'] * 100:+.2f}%")
+    journal = modes
+    show = ["date", "mode", "setup", "ticker", "total_score", "accumulation_score", "regime", "entry_ref", "stop",
+            "position_size", "outcome_return", "outcome_relative", "outcome_exit_date"]
     st.dataframe(journal[[c for c in show if c in journal.columns]].sort_values("date", ascending=False), hide_index=True)
 
 

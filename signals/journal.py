@@ -2,7 +2,8 @@
 
 The outcome is the trade the backtest engine would have made from that signal (t+1 open,
 costs, ATR stop, target, gaps, max holding), so live results compare directly with the backtest.
-storage/signals/journal_<market>.parquet, one row per (date, ticker).
+storage/signals/journal_<market>.parquet, one row per (date, ticker, setup). `mode` is "canlı" for
+live signals and "gözlem" for observation-mode setups, which are tracked but never reported as signals.
 """
 
 from __future__ import annotations
@@ -30,16 +31,20 @@ def read_journal(cfg: Config, market: str) -> pd.DataFrame:
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
 
 
-def record_signals(signals: pd.DataFrame, cfg: Config, market: str) -> int:
-    """Append today's signals; a (date, ticker) already in the journal is never overwritten."""
+def record_signals(signals: pd.DataFrame, cfg: Config, market: str, mode: str = "canlı", setup: str = "baseline") -> int:
+    """Append signals; a (date, ticker, setup) already in the journal is never overwritten."""
     if signals.empty:
         return 0
     journal = read_journal(cfg, market)
     new = signals.assign(**{c: np.nan for c in OUTCOME_COLUMNS})
     new["outcome_exit_date"] = pd.NaT
+    new["mode"] = mode
+    if "setup" not in new:
+        new["setup"] = setup
     if not journal.empty:
-        known = set(zip(journal["date"], journal["ticker"]))
-        new = new[[(d, t) not in known for d, t in zip(new["date"], new["ticker"])]]
+        journal = journal.assign(setup=journal.get("setup", "baseline"), mode=journal.get("mode", "canlı"))
+        known = set(zip(journal["date"], journal["ticker"], journal["setup"]))
+        new = new[[k not in known for k in zip(new["date"], new["ticker"], new["setup"])]]
     out = pd.concat([journal, new], ignore_index=True) if not journal.empty else new
     path = journal_path(cfg, market)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,8 +81,13 @@ def update_outcomes(cfg: Config, market: str, prices: pd.DataFrame, benchmark: p
     return filled
 
 
-def live_performance(journal: pd.DataFrame) -> dict:
-    """Closed-signal statistics in the same terms as the backtest report."""
+def live_performance(journal: pd.DataFrame, mode: str | None = "canlı", setup: str | None = None) -> dict:
+    """Closed-signal statistics in the same terms as the backtest report, for one mode/setup."""
+    if not journal.empty:
+        if mode is not None:
+            journal = journal[journal.get("mode", pd.Series("canlı", index=journal.index)) == mode]
+        if setup is not None:
+            journal = journal[journal["setup"] == setup]
     closed = journal.dropna(subset=["outcome_return"]) if not journal.empty else journal
     if closed.empty:
         return {"signals": len(journal), "closed": 0}

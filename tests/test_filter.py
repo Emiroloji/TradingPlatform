@@ -53,3 +53,16 @@ def test_setup_track_record_gates_everything(cfg):
         assert out.empty
         assert funnel[-1][1] == 0 and "kurulum" in funnel[-1][0]
     assert "pozitif değil" in setup_ok({"trades": 154, "expectancy_excess": -0.0003}, cfg)[1]
+
+
+def test_observation_setup_needs_baseline_and_13f_rule(cfg):
+    from signals.filter import observation_candidates
+
+    rows = _rows(cfg, n=4)
+    rows["inst_filers_chg"] = [0.1, 0.1, -0.1, float("nan")]
+    rows["inst_shares_chg"] = [0.2, -0.2, 0.2, 0.2]
+    out = observation_candidates(rows, cfg, "us")
+    assert list(out.index) == [0] and (out["setup"] == "kurumsal_toplama").all()
+    assert observation_candidates(rows, cfg, "bist").empty
+    # setup track record (rule 7) is not required in observation mode
+    assert apply_conservative_filter(rows, cfg, None)[0].empty

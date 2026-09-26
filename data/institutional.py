@@ -6,6 +6,8 @@
 3. Per (report period, CUSIP): number of filers and total shares, counting only original 13F-HR
    filings made by the legal deadline. That aggregate is known from `available_from`
    = period end + deadline + 1 day, so late filings can never leak into earlier dates.
+4. 13F share counts are not split-adjusted: `split_factor` is the product of stock splits since
+   the previous report period (yfinance), used to compare quarters on the same share basis.
 """
 
 from __future__ import annotations
@@ -107,6 +109,18 @@ def aggregate(holdings: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     return agg
 
 
+def add_split_factors(table: pd.DataFrame, splits: pd.DataFrame) -> pd.DataFrame:
+    """split_factor per (ticker, period): product of split ratios dated in (previous period, period]."""
+    table = table.sort_values(["ticker", "period"]).copy()
+    table["prev_period"] = table.groupby("ticker")["period"].shift(1)
+    factors = []
+    for row in table.itertuples():
+        s = splits[(splits["ticker"] == row.ticker) & (splits["date"] > row.prev_period) & (splits["date"] <= row.period)]
+        factors.append(float(s["ratio"].prod()) if len(s) and pd.notna(row.prev_period) else 1.0)
+    table["split_factor"] = factors
+    return table.drop(columns="prev_period")
+
+
 def institutional_path(cfg: Config, market: str) -> Path:
     return cfg.storage_path / "institutional" / f"{market}_holdings.parquet"
 
@@ -122,7 +136,9 @@ def update_institutional(cfg: Config, market: str, tickers: list[str]) -> pd.Dat
         mapping.to_parquet(mapping_path, index=False)
     cusips = set(mapping["cusip"])
     first = pd.Timestamp(cfg.institutional.first_period)
+    path = institutional_path(cfg, market)
 
+    new_data = False
     for link in dataset_links(cfg):
         target = cache / (Path(link).stem + ".parquet")
         if target.exists():
@@ -132,11 +148,19 @@ def update_institutional(cfg: Config, market: str, tickers: list[str]) -> pd.Dat
             continue  # quarter-named file entirely before the periods we need
         logger.info("13F dataset %s", Path(link).name)
         parse_dataset(_get(SEC + link, cfg), cusips).to_parquet(target, index=False)
+        new_data = True
+
+    # nothing new and a recent table: reuse it (split factors are refreshed at least weekly)
+    if not new_data and path.exists() and pd.Timestamp.now() - pd.Timestamp(path.stat().st_mtime, unit="s") < pd.Timedelta(days=7):
+        return pd.read_parquet(path)
 
     holdings = pd.concat([pd.read_parquet(p) for p in sorted(cache.glob("*_form13f.parquet"))], ignore_index=True)
     holdings = holdings[holdings["period"] >= first].drop_duplicates()
     table = aggregate(holdings, cfg).merge(mapping, on="cusip")
-    path = institutional_path(cfg, market)
+    from data.fetch import fetch_splits
+
+    splits = fetch_splits(sorted(table["ticker"].unique()), first.date(), pd.Timestamp.today().date())
+    table = add_split_factors(table, splits)
     path.parent.mkdir(parents=True, exist_ok=True)
     table.to_parquet(path, index=False)
     logger.info("13F [%s]: %d ticker-quarters, periods %s → %s", market, len(table),

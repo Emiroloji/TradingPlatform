@@ -39,6 +39,25 @@ def ml_signals(features: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     return features[rule_based_mask(features, cfg) & (features["prob"] >= cfg.signal.min_probability)]
 
 
+# Observation-mode setups (not live signals): extra conditions on top of the rule-based baseline.
+OBSERVATION_RULES = {
+    # 13F: more institutions AND more (split-adjusted) shares than last quarter
+    "kurumsal_toplama": lambda df: (df["inst_filers_chg"] > 0) & (df["inst_shares_chg"] > 0),
+}
+
+
+def observation_candidates(df: pd.DataFrame, cfg: Config, market: str) -> pd.DataFrame:
+    """Rows qualifying for each observation setup of `market`, with a `setup` column.
+
+    Rule 7 (setup track record) is deliberately not applied: observation exists to measure it.
+    """
+    frames = []
+    for name in cfg.signal.observation.get(market, []):
+        mask = rule_based_mask(df, cfg) & OBSERVATION_RULES[name](df).fillna(False)
+        frames.append(df[mask].assign(setup=name))
+    return pd.concat(frames) if frames else df.iloc[0:0].assign(setup=pd.Series(dtype=str))
+
+
 def setup_ok(setup: dict | None, cfg: Config) -> tuple[bool, str]:
     """Rule 7 on the stored out-of-sample backtest summary of the setup (None = never backtested)."""
     if not setup:

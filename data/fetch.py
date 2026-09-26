@@ -74,3 +74,19 @@ def fetch_prices(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     ].astype(float)
     logger.info("Fetched %d rows for %d/%d symbols", len(prices), len(frames), len(tickers))
     return prices[PRICE_COLUMNS].sort_values(["ticker", "date"], ignore_index=True)
+
+
+def fetch_splits(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """Stock split events [date, ticker, ratio] (ratio 10 = 10-for-1) from yfinance, `end` inclusive."""
+    raw = yf.download(
+        tickers, start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(), interval="1d",
+        actions=True, auto_adjust=False, group_by="ticker", progress=False, threads=True,
+    )
+    frames = []
+    for symbol in tickers:
+        if raw.empty or symbol not in raw.columns.get_level_values(0):
+            continue
+        s = raw[symbol]["Stock Splits"]
+        s = s[s > 0]
+        frames.append(pd.DataFrame({"date": s.index.normalize(), "ticker": symbol, "ratio": s.to_numpy(dtype=float)}))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["date", "ticker", "ratio"])
