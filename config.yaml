@@ -125,6 +125,12 @@ model:
     random_state: 42
     verbose: -1
   min_fold_win_ratio: 0.6          # ML, OOS test dönemlerinin en az bu oranında baseline'dan iyi olmalı
+  drift:
+    recent_days: 60                # son N işlem günü, modelin eğitim penceresiyle kıyaslanır
+    psi_bins: 10
+    psi_alert: 0.25                # PSI > 0.25: önemli dağılım kayması (yaygın kabul)
+    auc_drop_alert: 0.05           # son etiketli dönem AUC'si OOS ortalamasının bu kadar altındaysa uyarı
+    top_features: 10               # PSI raporu en önemli N özellik için
 
 backtest:
   commission: 0.002     # işlem başına, tek yön
@@ -180,6 +186,15 @@ insider:
   window_days: 90                 # geriye dönük pencere (takvim günü)
   cluster_min_buyers: 2           # "küme alım": pencerede en az bu kadar farklı içeriden alıcı
 
+# SEC 13F kurumsal pozisyonlar — ücretli AKD/takas verisinin ücretsiz vekili (yalnızca ABD).
+institutional:
+  markets: [us]
+  listing_url: "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
+  ftd_listing_url: "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data"
+  ftd_files_for_cusip_map: 6      # CUSIP↔hisse kodu eşlemesi için son N FTD dosyası (SEC, ücretsiz)
+  filing_deadline_days: 45        # 13F yasal süre: çeyrek sonu + 45 gün
+  first_period: "2019-03-31"      # değişim hesabı için bir önceki çeyrek de gerekir
+
 telegram:
   max_message_chars: 4096      # Telegram Bot API tek mesaj üst sınırı
   timeout_seconds: 30
@@ -188,3 +203,5 @@ schedule:
   bist_run_time: "18:45"   # Europe/Istanbul
   us_run_time: "23:45"
   timezone: Europe/Istanbul
+  retrain_day_of_month: 1          # her ay bu gün: yeniden eğitim + ML onay kontrolü + drift raporu
+  retrain_time: "20:00"

@@ -10,6 +10,7 @@ from config import Config
 from features.accumulation import accumulation_conditions, accumulation_score
 from features.indicators import compute_indicators
 from features.insider import coverage_end, insider_features
+from features.institutional import institutional_features
 from features.liquidity import liquidity
 from features.regime import market_regime
 from features.relative import relative_strength
@@ -43,9 +44,11 @@ def ticker_features(
     market: str,
     fx: pd.Series | None = None,
     insider: tuple[pd.DataFrame, pd.Timestamp] | None = None,
+    institutional: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """All features for one ticker; `bars` and `bench` are date-indexed OHLCV, `fx` a close series,
-    `insider` this ticker's Form 4 transactions and the data coverage end."""
+    `insider` this ticker's Form 4 transactions and the data coverage end, `institutional` its
+    quarterly 13F aggregates."""
     out = pd.concat(
         [
             compute_indicators(bars, cfg),
@@ -59,6 +62,8 @@ def ticker_features(
     if insider is not None:
         tx, covered_until = insider
         out = out.join(insider_features(out.index, tx, out["avg_turnover"], cfg, covered_until))
+    if institutional is not None:
+        out = out.join(institutional_features(out.index, institutional, cfg))
     out["fundamental_score"] = float("nan")  # no fundamental data source yet
     # regime is a benchmark property; carry its last known value onto the stock's dates
     out["regime"] = last_known(regime, out.index)
@@ -72,11 +77,13 @@ def compute_features(
     market: str,
     fx: pd.DataFrame | None = None,
     insider: pd.DataFrame | None = None,
+    institutional: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format prices (many tickers) + benchmark bars (+ FX bars) -> features table (MIMARI §4).
 
     With `fx`, the regime is computed on the benchmark in USD and liquidity is measured in USD.
-    With `insider` (Form 4 transactions with a `ticker` column), insider features are added.
+    With `insider` (Form 4 transactions with a `ticker` column), insider features are added; with
+    `institutional` (13F quarterly aggregates with a `ticker` column), institutional features.
     """
     bench = _by_date(benchmark)
     fx_close = None if fx is None else _by_date(fx)["close"]
@@ -85,7 +92,8 @@ def compute_features(
     covered_until = coverage_end(insider) if insider is not None else None
     for ticker, bars in prices.groupby("ticker", sort=True):
         tx = None if insider is None else (insider[insider["ticker"] == ticker], covered_until)
-        feats = ticker_features(_by_date(bars), bench, regime, cfg, market, fx_close, tx)
+        inst = None if institutional is None else institutional[institutional["ticker"] == ticker]
+        feats = ticker_features(_by_date(bars), bench, regime, cfg, market, fx_close, tx, inst)
         feats.insert(0, "ticker", ticker)
         frames.append(feats)
     table = pd.concat(frames).rename_axis("date").reset_index()

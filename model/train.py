@@ -50,9 +50,10 @@ def design_matrix(features: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """Base features plus market-specific ones present as columns (e.g. US insider features).
     Column presence is fixed per market, never per row, so it cannot leak future information."""
     from features.insider import COLUMNS as INSIDER_COLUMNS
+    from features.institutional import COLUMNS as INSTITUTIONAL_COLUMNS
 
     X = features.assign(regime_code=features["regime"].map(REGIME_CODES))
-    names = feature_names(cfg) + [c for c in INSIDER_COLUMNS if c in X.columns]
+    names = feature_names(cfg) + [c for c in INSIDER_COLUMNS + INSTITUTIONAL_COLUMNS if c in X.columns]
     return X[names].astype(float)
 
 

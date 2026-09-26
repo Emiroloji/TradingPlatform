@@ -102,6 +102,10 @@ def fetch_market(cfg: Config, market: str) -> None:
 
         ciks = set(load_universe(mcfg, cfg)["cik"].dropna().astype(int))
         update_insider(cfg, market, ciks, full_start.date(), end)
+    if market in cfg.institutional.markets:
+        from data.institutional import update_institutional
+
+        update_institutional(cfg, market, load_universe(mcfg, cfg)["symbol"].tolist())
     for required in [mcfg.benchmark, *fx]:
         if required in report.excluded or required not in set(raw["ticker"]):
             raise RuntimeError(f"{required} failed quality checks; see report")
@@ -141,7 +145,12 @@ def features_market(cfg: Config, market: str) -> None:
             # issuer-level filings apply to every share class of the company (GOOGL/GOOG, FOXA/FOX, ...)
             symbols = load_universe(mcfg, cfg)[["cik", "symbol"]].rename(columns={"symbol": "ticker"})
             insider = insider.astype({"cik": int}).merge(symbols, on="cik")
-    table = compute_features(prices[~is_bench & ~is_fx], prices[is_bench], cfg, market, fx, insider)
+    institutional = None
+    if market in cfg.institutional.markets:
+        from data.institutional import read_institutional
+
+        institutional = read_institutional(cfg, market)
+    table = compute_features(prices[~is_bench & ~is_fx], prices[is_bench], cfg, market, fx, insider, institutional)
     path = store.write_features(table, cfg, market)
 
     latest = table[table["date"] == table["date"].max()]
@@ -301,6 +310,64 @@ def train_market(cfg: Config, market: str) -> None:
     logger.info("[%s] model %s saved to %s", market, art.version, path)
     logger.info("[%s] folds:\n%s", market, art.folds.to_string(index=False))
     logger.info("[%s] top features:\n%s", market, art.importance.head(10).round(3).to_string())
+
+
+def drift_market(cfg: Config, market: str) -> list[str]:
+    """Feature PSI (recent vs the live model's training window) and OOS AUC trend; returns alerts."""
+    from model.drift import drift_report, feature_drift
+    from model.predict import load_model
+    from report.telegram_bot import send_alert
+
+    model = load_model(market)
+    root = registry_for(market) / model.version
+    features = store.read_features(cfg, market)
+    features = features[features["liquidity_ok"].astype(bool)]
+    X = features.assign(regime_code=features["regime"].map({"bear": -1, "sideways": 0, "bull": 1}))
+    last = X["date"].max()
+    recent_start = sorted(X["date"].unique())[-cfg.model.drift.recent_days]
+    train = X[(X["date"] >= last - pd.DateOffset(years=cfg.model.train_years)) & (X["date"] < recent_start)]
+    recent = X[X["date"] >= recent_start]
+    psi_values = feature_drift(train, recent, model.meta["features"], cfg)
+
+    folds = pd.read_csv(root / "folds.csv").dropna(subset=["auc"])
+    auc_recent, auc_oos = float(folds["auc"].iloc[-1]), float(folds["auc"].iloc[:-1].mean())
+    importance = pd.read_csv(root / "feature_importance.csv", index_col=0)["gain_share"]
+    body, alerts = drift_report(psi_values, importance, auc_recent, auc_oos, cfg)
+    header = (
+        f"# Model Drift Raporu — {market.upper()} (model {model.version})\n\n"
+        f"- Eğitim penceresi: {train['date'].min().date()} → {train['date'].max().date()} | "
+        f"son dönem: {recent['date'].min().date()} → {last.date()} ({cfg.model.drift.recent_days} işlem günü)\n"
+        f"- Son AUC = son walk-forward test dönemi ({folds['test_start'].iloc[-1]}); OOS ortalaması = önceki dönemler\n\n"
+    )
+    path = store.reports_dir(cfg) / f"drift_{market}_{last.date()}.md"
+    path.write_text(header + body, encoding="utf-8")
+    if alerts:
+        send_alert(f"{market.upper()} model kayması: " + "; ".join(alerts), cfg)
+    logger.info("[%s] drift: %d alerts -> %s", market, len(alerts), path)
+    return alerts
+
+
+def retrain_market(cfg: Config, market: str) -> None:
+    """Monthly: retrain, re-run the live-approval backtest (KURALLAR §5), drift report, Telegram note."""
+    from model.predict import load_model
+    from report.telegram_bot import send
+
+    train_market(cfg, market)
+    ml_backtest_market(cfg, market)
+    alerts = drift_market(cfg, market)
+    model = load_model(market)
+    status = "canlıya ONAYLI" if model.meta.get("approved_for_live") else "baseline'ı geçemedi, kural bazlı sistem sürüyor"
+    send(f"{market.upper()} aylık yeniden eğitim: model {model.version} — {status}. Drift uyarısı: {len(alerts)}.", cfg)
+
+
+def cmd_drift(cfg: Config) -> None:
+    for market in cfg.enabled_markets():
+        drift_market(cfg, market)
+
+
+def cmd_retrain(cfg: Config) -> None:
+    for market in cfg.enabled_markets():
+        retrain_market(cfg, market)
 
 
 def cmd_train(cfg: Config) -> None:
@@ -562,8 +629,8 @@ def cmd_run(cfg: Config) -> None:
         run_market(cfg, market)
 
 
-def cmd_schedule(cfg: Config) -> None:
-    """Run each enabled market every weekday at its configured post-close time (APScheduler)."""
+def build_scheduler(cfg: Config):
+    """Daily run per market on weekdays after the close, monthly retrain per market (APScheduler)."""
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
@@ -580,7 +647,26 @@ def cmd_schedule(cfg: Config) -> None:
 
         scheduler.add_job(job, trigger, id=f"daily_{market}", misfire_grace_time=3600, coalesce=True)
         logger.info("Scheduled %s: weekdays %02d:%02d %s", market, hour, minute, cfg.schedule.timezone)
-    scheduler.start()
+
+        r_hour, r_minute = map(int, cfg.schedule.retrain_time.split(":"))
+        monthly = CronTrigger(day=cfg.schedule.retrain_day_of_month, hour=r_hour, minute=r_minute, timezone=cfg.schedule.timezone)
+
+        def retrain_job(m: str = market) -> None:
+            try:
+                retrain_market(load_config(), m)
+            except Exception as exc:
+                logger.exception("Monthly retrain for %s failed", m)
+                from report.telegram_bot import send_alert
+
+                send_alert(f"{m.upper()} aylık yeniden eğitim başarısız: {type(exc).__name__}", load_config())
+
+        scheduler.add_job(retrain_job, monthly, id=f"retrain_{market}", misfire_grace_time=6 * 3600, coalesce=True)
+        logger.info("Scheduled %s retrain: day %d of each month %s", market, cfg.schedule.retrain_day_of_month, cfg.schedule.retrain_time)
+    return scheduler
+
+
+def cmd_schedule(cfg: Config) -> None:
+    build_scheduler(cfg).start()
 
 
 def cmd_backtest(cfg: Config, ml: bool = False) -> None:
@@ -598,6 +684,8 @@ COMMANDS = {
     "backtest": cmd_backtest,
     "run": cmd_run,
     "schedule": cmd_schedule,
+    "drift": cmd_drift,
+    "retrain": cmd_retrain,
 }
 
 

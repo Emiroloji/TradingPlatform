@@ -131,6 +131,14 @@ class LabelConfig(_Section):
     use_stop_barrier: bool
 
 
+class DriftConfig(_Section):
+    recent_days: int
+    psi_bins: int
+    psi_alert: float
+    auc_drop_alert: float
+    top_features: int
+
+
 class ModelConfig(_Section):
     type: str
     train_years: int
@@ -139,6 +147,7 @@ class ModelConfig(_Section):
     first_test_start: str
     params: dict[str, float | int | str]
     min_fold_win_ratio: float
+    drift: DriftConfig
 
 
 class BacktestConfig(_Section):
@@ -189,6 +198,15 @@ class InsiderConfig(_Section):
     cluster_min_buyers: int
 
 
+class InstitutionalConfig(_Section):
+    markets: list[str]
+    listing_url: str
+    ftd_listing_url: str
+    ftd_files_for_cusip_map: int
+    filing_deadline_days: int
+    first_period: str
+
+
 class TelegramConfig(_Section):
     max_message_chars: int
     timeout_seconds: int
@@ -198,6 +216,8 @@ class ScheduleConfig(_Section):
     bist_run_time: str
     us_run_time: str
     timezone: str
+    retrain_day_of_month: int
+    retrain_time: str
 
 
 class Config(_Section):
@@ -214,6 +234,7 @@ class Config(_Section):
     gemini: GeminiConfig
     news: NewsConfig
     insider: InsiderConfig
+    institutional: InstitutionalConfig
     telegram: TelegramConfig
     schedule: ScheduleConfig
 
