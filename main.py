@@ -103,15 +103,6 @@ def fetch_market(cfg: Config, market: str) -> None:
     raw = store.read_prices(store.raw_dir(cfg, market), symbols)
     raw = raw[raw["date"] >= full_start]
     cleaned, report = clean_prices(raw, cfg, market, price_only=frozenset(fx))
-    if market in cfg.insider.markets:
-        from data.insider import update_insider
-
-        ciks = set(load_universe(mcfg, cfg)["cik"].dropna().astype(int))
-        update_insider(cfg, market, ciks, full_start.date(), end)
-    if market in cfg.institutional.markets:
-        from data.institutional import update_institutional
-
-        update_institutional(cfg, market, load_universe(mcfg, cfg)["symbol"].tolist())
     for required in [mcfg.benchmark, *fx]:
         if required in report.excluded or required not in set(raw["ticker"]):
             raise RuntimeError(f"{required} failed quality checks; see report")
@@ -129,9 +120,29 @@ def fetch_market(cfg: Config, market: str) -> None:
     )
 
 
+def fetch_sec_market(cfg: Config, market: str) -> None:
+    """SEC insider (Form 4) and institutional (13F) data for markets that use them (US).
+
+    Separate from fetch_market so the two can run in separate processes: in one process the
+    prices plus the 13F rebuild outgrew the scheduler's memory limit on the server."""
+    mcfg = cfg.markets[market]
+    if market in cfg.insider.markets:
+        from data.insider import update_insider
+
+        end = last_complete_session(cfg, market)
+        full_start = end - pd.DateOffset(years=cfg.data.history_years)
+        ciks = set(load_universe(mcfg, cfg)["cik"].dropna().astype(int))
+        update_insider(cfg, market, ciks, full_start.date(), end)
+    if market in cfg.institutional.markets:
+        from data.institutional import update_institutional
+
+        update_institutional(cfg, market, load_universe(mcfg, cfg)["symbol"].tolist())
+
+
 def cmd_fetch(cfg: Config) -> None:
     for market in cfg.enabled_markets():
         fetch_market(cfg, market)
+        fetch_sec_market(cfg, market)
 
 
 def features_market(cfg: Config, market: str) -> None:
@@ -560,10 +571,11 @@ def run_market(cfg: Config, market: str) -> Path:
     mcfg = cfg.markets[market]
     step = "veri çekme"
     try:
-        # [1] data  [2] features
-        fetch_market(cfg, market)
+        # [1] data  [2] features, each heavy step in its own process (memory is returned after it)
+        run_step(fetch_market, market)
+        run_step(fetch_sec_market, market)
         step = "özellikler"
-        features_market(cfg, market)
+        run_step(features_market, market)
         today = store.read_features_day(cfg, market)
         prices = store.read_prices(store.clean_dir(cfg, market))
         bench = prices[prices["ticker"] == mcfg.benchmark]
@@ -659,7 +671,7 @@ def run_market(cfg: Config, market: str) -> Path:
         path.write_text(text + "\n", encoding="utf-8")
         sent = send(text, cfg)
         logger.info("[%s] daily run done: %d signals, report %s, telegram %s", market, len(signal_rows), path, sent)
-        sync_database(cfg, market)
+        run_step(sync_database, market)
         return path
     except Exception as exc:
         send_alert(f"{market.upper()} günlük akış '{step}' adımında durdu: {type(exc).__name__}: {str(exc)[:200]}", cfg)
@@ -685,7 +697,9 @@ def cmd_db_sync(cfg: Config) -> None:
         sync_market(cfg, market)
 
 
-BOOTSTRAP_STEPS = (fetch_market, features_market, backtest_market, train_market, ml_backtest_market, sync_database)
+BOOTSTRAP_STEPS = (
+    fetch_market, fetch_sec_market, features_market, backtest_market, train_market, ml_backtest_market, sync_database
+)
 
 
 def cmd_bootstrap(cfg: Config) -> None:
@@ -697,11 +711,7 @@ def cmd_bootstrap(cfg: Config) -> None:
             continue
         logger.info("[%s] bootstrap: building data, features, backtests and model", market)
         for step in BOOTSTRAP_STEPS:
-            # one process per step: memory a step leaves behind is not carried into the next one
-            # (in one process the US steps together outgrew the scheduler's memory limit)
-            code = _run_child(_step_job, step.__name__, market)
-            if code != 0:
-                raise RuntimeError(f"[{market}] bootstrap step {step.__name__} failed (exit code {code})")
+            run_step(step, market)
 
 
 def cmd_run(cfg: Config) -> None:
@@ -738,6 +748,14 @@ def _step_job(step: str, market: str) -> None:
     except Exception:
         logger.exception("[%s] %s failed", market, step)
         raise SystemExit(1) from None
+
+
+def run_step(step, market: str) -> None:
+    """step(cfg, market) in its own process: memory a step leaves behind is not carried into the next
+    one (in one process the US steps together outgrew the scheduler's memory limit). Raises on failure."""
+    code = _run_child(_step_job, step.__name__, market)
+    if code != 0:
+        raise RuntimeError(f"[{market}] {step.__name__} failed (exit code {code})")
 
 
 def _run_child(target, *args) -> int:

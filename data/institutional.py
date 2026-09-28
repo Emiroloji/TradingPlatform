@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import logging
 import re
+import shutil
 import time
 import urllib.request
 import zipfile
@@ -28,6 +29,8 @@ from data.insider import _user_agent
 logger = logging.getLogger(__name__)
 
 SEC = "https://www.sec.gov"
+INFOTABLE_BLOCK_BYTES = 32 * 1024 * 1024
+AGGREGATE_CUSIP_GROUPS = 16
 
 
 def _get(url: str, cfg: Config) -> bytes:
@@ -35,6 +38,16 @@ def _get(url: str, cfg: Config) -> bytes:
     try:
         with urllib.request.urlopen(req, timeout=cfg.insider.timeout_seconds) as resp:  # noqa: S310 (sec.gov)
             return resp.read()
+    finally:
+        time.sleep(cfg.insider.request_interval_seconds)
+
+
+def _download(url: str, target: Path, cfg: Config) -> None:
+    """Stream a (100 MB) file to disk instead of holding it in memory."""
+    req = urllib.request.Request(url, headers={"User-Agent": _user_agent(cfg)})
+    try:
+        with urllib.request.urlopen(req, timeout=cfg.insider.timeout_seconds) as resp, open(target, "wb") as out:  # noqa: S310
+            shutil.copyfileobj(resp, out, 1024 * 1024)
     finally:
         time.sleep(cfg.insider.request_interval_seconds)
 
@@ -77,17 +90,32 @@ def dataset_links(cfg: Config) -> list[str]:
     return sorted(set(re.findall(r'href="(/files/[^"]*form-13f-data-sets/[^"]+\.zip)"', page)))
 
 
-def parse_dataset(zip_bytes: bytes, cusips: set[str]) -> pd.DataFrame:
-    """Holdings of `cusips` in one 13F dataset: filer, period, filing date, shares."""
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+def _our_holdings(stream, cusips: set[str]) -> pd.DataFrame:
+    """INFOTABLE rows of `cusips` (common shares, no options), parsed block by block.
+
+    The table is ~400 MB uncompressed and we keep ~3% of it; read whole it took ~1.7 GB. Blocks end
+    on a line break and the parser never lets a value span lines, so this equals a single read."""
+    header = stream.readline()
+    frames = []
+    while block := stream.read(INFOTABLE_BLOCK_BYTES):
+        block += stream.readline()  # complete the block's last row
+        info = pd.read_csv(io.BytesIO(header + block), sep="\t", dtype=str, engine="pyarrow",
+                           usecols=["ACCESSION_NUMBER", "CUSIP", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"])
+        ours = info["CUSIP"].str.upper().isin(cusips) & (info["SSHPRNAMTTYPE"] == "SH") & info["PUTCALL"].isna()
+        frames.append(info.loc[ours, ["ACCESSION_NUMBER", "CUSIP", "SSHPRNAMT"]])  # the filter columns are done
+    return pd.concat(frames, ignore_index=True)
+
+
+def parse_dataset(source: bytes | Path, cusips: set[str]) -> pd.DataFrame:
+    """Holdings of `cusips` in one 13F dataset (zip bytes or a zip file): filer, period, filing date, shares."""
+    with zipfile.ZipFile(io.BytesIO(source) if isinstance(source, bytes) else source) as z:
         # some archives keep the tables in a sub-folder: find them by file name
         member = {Path(n).name: n for n in z.namelist()}
         sub = pd.read_csv(z.open(member["SUBMISSION.tsv"]), sep="\t", dtype=str,
                           usecols=["ACCESSION_NUMBER", "FILING_DATE", "SUBMISSIONTYPE", "CIK", "PERIODOFREPORT"])
-        info = pd.read_csv(z.open(member["INFOTABLE.tsv"]), sep="\t", dtype=str, engine="pyarrow",
-                           usecols=["ACCESSION_NUMBER", "CUSIP", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"])
+        with z.open(member["INFOTABLE.tsv"]) as stream:
+            info = _our_holdings(stream, cusips)
     sub = sub[sub["SUBMISSIONTYPE"] == "13F-HR"]  # originals only
-    info = info[info["CUSIP"].str.upper().isin(cusips) & (info["SSHPRNAMTTYPE"] == "SH") & info["PUTCALL"].isna()]
     df = info.merge(sub, on="ACCESSION_NUMBER")
     return pd.DataFrame(
         {
@@ -107,6 +135,25 @@ def aggregate(holdings: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     agg = on_time.groupby(["period", "cusip"]).agg(filers=("filer_cik", "nunique"), shares=("shares", "sum")).reset_index()
     agg["available_from"] = agg["period"] + deadline + pd.Timedelta(days=1)
     return agg
+
+
+def _aggregate_cached(files: list[Path], cusips: list[str], first: pd.Timestamp, cfg: Config) -> pd.DataFrame:
+    """aggregate() of every cached dataset from `first` on, for `cusips`, a group of CUSIPs at a time.
+
+    All quarters together are ~25M rows (~4.7 GB peak in one frame). Duplicates and groups never
+    span CUSIPs, so aggregating CUSIP groups separately and sorting gives the same table."""
+    import pyarrow.dataset as ds
+
+    data = ds.dataset([str(f) for f in files], format="parquet")
+    size = -(-len(cusips) // AGGREGATE_CUSIP_GROUPS)
+    parts = []
+    for start in range(0, len(cusips), size):
+        group = ds.field("cusip").isin(cusips[start : start + size])
+        # one file at a time: the default read-ahead decodes several ~1M-row files at once
+        holdings = data.to_table(filter=group, fragment_readahead=1, batch_readahead=1, use_threads=False).to_pandas()
+        holdings = holdings[holdings["period"] >= first].drop_duplicates()
+        parts.append(aggregate(holdings, cfg))
+    return pd.concat(parts, ignore_index=True).sort_values(["period", "cusip"], ignore_index=True)
 
 
 def add_split_factors(table: pd.DataFrame, splits: pd.DataFrame) -> pd.DataFrame:
@@ -147,16 +194,19 @@ def update_institutional(cfg: Config, market: str, tickers: list[str]) -> pd.Dat
         if m and pd.Timestamp(int(m.group(1)), 3 * int(m.group(2)), 1) + pd.offsets.MonthEnd(0) < first:
             continue  # quarter-named file entirely before the periods we need
         logger.info("13F dataset %s", Path(link).name)
-        parse_dataset(_get(SEC + link, cfg), cusips).to_parquet(target, index=False)
+        zip_path = cache / (Path(link).stem + ".zip.tmp")
+        try:
+            _download(SEC + link, zip_path, cfg)
+            parse_dataset(zip_path, cusips).to_parquet(target, index=False)
+        finally:
+            zip_path.unlink(missing_ok=True)  # only the small filtered parquet is kept
         new_data = True
 
     # nothing new and a recent table: reuse it (split factors are refreshed at least weekly)
     if not new_data and path.exists() and pd.Timestamp.now() - pd.Timestamp(path.stat().st_mtime, unit="s") < pd.Timedelta(days=7):
         return pd.read_parquet(path)
 
-    holdings = pd.concat([pd.read_parquet(p) for p in sorted(cache.glob("*_form13f.parquet"))], ignore_index=True)
-    holdings = holdings[holdings["period"] >= first].drop_duplicates()
-    table = aggregate(holdings, cfg).merge(mapping, on="cusip")
+    table = _aggregate_cached(sorted(cache.glob("*_form13f.parquet")), sorted(cusips), first, cfg).merge(mapping, on="cusip")
     from data.fetch import fetch_splits
 
     splits = fetch_splits(sorted(table["ticker"].unique()), first.date(), pd.Timestamp.today().date())
