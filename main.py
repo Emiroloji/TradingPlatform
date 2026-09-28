@@ -763,10 +763,12 @@ def _run_isolated(job, market: str) -> None:
 
 def build_scheduler(cfg: Config):
     """Daily run per market on weekdays after the close, monthly retrain per market (APScheduler)."""
+    from apscheduler.executors.pool import ThreadPoolExecutor
     from apscheduler.schedulers.blocking import BlockingScheduler
     from apscheduler.triggers.cron import CronTrigger
 
-    scheduler = BlockingScheduler(timezone=cfg.schedule.timezone)
+    # one job at a time: the markets' jobs run one after another instead of side by side (shared server)
+    scheduler = BlockingScheduler(timezone=cfg.schedule.timezone, executors={"default": ThreadPoolExecutor(max_workers=1)})
     for market in cfg.enabled_markets():
         hour, minute = map(int, getattr(cfg.schedule, f"{market}_run_time").split(":"))
         trigger = CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone=cfg.schedule.timezone)

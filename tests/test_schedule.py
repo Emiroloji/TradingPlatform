@@ -10,6 +10,7 @@ def test_scheduler_has_daily_and_monthly_jobs_per_market(cfg):
     fields = {f.name: str(f) for f in daily.fields}
     assert fields["day_of_week"] == "mon-fri" and fields["hour"] == "18" and fields["minute"] == "45"
     assert str(daily.timezone) == cfg.schedule.timezone
+    assert scheduler._executors["default"]._pool._max_workers == 1  # jobs never overlap
 
 
 def test_isolated_job_crash_sends_alert(cfg, monkeypatch):

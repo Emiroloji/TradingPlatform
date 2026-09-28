@@ -223,4 +223,4 @@ schedule:
   us_run_time: "23:45"
   timezone: Europe/Istanbul
   retrain_day_of_month: 1          # her ay bu gün: yeniden eğitim + ML onay kontrolü + drift raporu
-  retrain_time: "20:00"
+  retrain_time: "03:30"             # gece: sunucu paylaşımlı, eğitim en ağır iş (~1,5 GB)
