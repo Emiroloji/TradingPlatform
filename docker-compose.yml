@@ -1,22 +1,32 @@
 # Dokploy (Compose) için: Git deposundan bu dosyayla kurulur.
 # Gizli değerler Dokploy → Environment sekmesinden verilir (.env depoya girmez).
-# Panel: Dokploy → Domains → servis "dashboard", port 8501.
+# Panel: Dokploy → Domains → servis "borsa-dashboard", port 8501.
+#
+# Sunucu başka projelerle paylaşılıyor (4 GB RAM):
+# - Servis adları "borsa-" ön eklidir: Dokploy ağında "db" gibi ortak bir ad başka projenin
+#   konteynerine çözümlenebilir.
+# - Her serviste bellek sınırı var; aşan servis kendi swap'ine düşer, komşuları boğmaz.
+#   Ölçülen tepe kullanım (Linux, S&P 500 + BIST): günlük akış ~0,9 GB, aylık eğitim ~1,5 GB.
 services:
-  db:
+  borsa-db:
     image: timescale/timescaledb:latest-pg16
     restart: unless-stopped
     environment:
       POSTGRES_DB: borsa
       POSTGRES_USER: borsa
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD gerekli}
+      # timescaledb-tune ilk kurulumda ayarları sunucunun tüm RAM'ine göre yapar; sınıra göre yapsın
+      TS_TUNE_MEMORY: 512MB
+      TS_TUNE_NUM_CPUS: "1"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U borsa -d borsa"]
       interval: 10s
       retries: 10
 
-  scheduler:
+  borsa-scheduler:
     build: .
     restart: unless-stopped
     # ilk açılışta veri/model yoksa üretir, sonra hafta içi günlük akış + aylık yeniden eğitim
@@ -28,16 +38,18 @@ services:
       SEC_USER_AGENT: ${SEC_USER_AGENT:?SEC_USER_AGENT gerekli (Ad eposta)}
       REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
       REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
-      DATABASE_URL: postgresql://borsa:${POSTGRES_PASSWORD}@db:5432/borsa
+      DATABASE_URL: postgresql://borsa:${POSTGRES_PASSWORD}@borsa-db:5432/borsa
       TZ: Europe/Istanbul
     volumes:
       - storage:/app/storage
       - registry:/app/model/registry
+    # her iş ayrı alt süreçte çalışır; boşta ~250 MB, aylık eğitimde ~1,5 GB
+    mem_limit: 1600m
     depends_on:
-      db:
+      borsa-db:
         condition: service_healthy
 
-  dashboard:
+  borsa-dashboard:
     build: .
     restart: unless-stopped
     command: ["streamlit", "run", "report/dashboard.py", "--server.headless", "true",
@@ -50,8 +62,9 @@ services:
     volumes:
       - storage:/app/storage:ro
       - registry:/app/model/registry:ro
+    mem_limit: 512m
     depends_on:
-      - scheduler
+      - borsa-scheduler
 
 volumes:
   pgdata:

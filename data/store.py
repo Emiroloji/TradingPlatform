@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable, Iterator
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from config import Config
 from data.clean import QualityReport
@@ -41,8 +44,55 @@ def write_features(table: pd.DataFrame, cfg: Config, market: str) -> Path:
     return path
 
 
-def read_features(cfg: Config, market: str) -> pd.DataFrame:
-    return pd.read_parquet(features_path(cfg, market))
+def write_features_chunks(chunks: Iterable[pd.DataFrame], cfg: Config, market: str) -> tuple[Path, pd.DataFrame]:
+    """Write the features table chunk by chunk (one row group each) so it is never whole in memory.
+
+    The file is written next to the target and renamed at the end: readers (dashboard) never see
+    a half-written table. Returns the path and the rows of the table's latest day."""
+    path = features_path(cfg, market)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".parquet.tmp")
+    writer, schema, latest = None, None, []
+    try:
+        for chunk in chunks:
+            if writer is None:
+                schema = pa.Schema.from_pandas(chunk, preserve_index=False)
+                writer = pq.ParquetWriter(tmp, schema)
+            writer.write_table(pa.Table.from_pandas(chunk, schema=schema, preserve_index=False))
+            latest.append(chunk[chunk["date"] == chunk["date"].max()])
+    finally:
+        if writer is not None:
+            writer.close()
+    if writer is None:
+        raise ValueError(f"No feature rows for {market}")
+    tmp.replace(path)
+    last = pd.concat(latest, ignore_index=True)
+    return path, last[last["date"] == last["date"].max()].reset_index(drop=True)
+
+
+def read_features(cfg: Config, market: str, columns: list[str] | None = None) -> pd.DataFrame:
+    return pd.read_parquet(features_path(cfg, market), columns=columns)
+
+
+def feature_columns(cfg: Config, market: str) -> list[str]:
+    return pq.read_schema(features_path(cfg, market)).names
+
+
+def iter_features(cfg: Config, market: str, batch_rows: int) -> Iterator[pd.DataFrame]:
+    """The features table in row batches of at most `batch_rows` (bounded memory)."""
+    for batch in pq.ParquetFile(features_path(cfg, market)).iter_batches(batch_size=batch_rows):
+        yield batch.to_pandas()
+
+
+def read_features_ticker(cfg: Config, market: str, ticker: str) -> pd.DataFrame:
+    return pd.read_parquet(features_path(cfg, market), filters=[("ticker", "==", ticker)]).reset_index(drop=True)
+
+
+def read_features_day(cfg: Config, market: str) -> pd.DataFrame:
+    """Rows of the latest day only; the daily flow needs nothing else from the table."""
+    path = features_path(cfg, market)
+    last = pd.read_parquet(path, columns=["date"])["date"].max()
+    return pd.read_parquet(path, filters=[("date", "==", last)]).reset_index(drop=True)
 
 
 def setup_path(cfg: Config, market: str) -> Path:
@@ -76,6 +126,13 @@ def read_prices(directory: Path, symbols: list[str] | None = None) -> pd.DataFra
     if not frames:
         return pd.DataFrame(columns=PRICE_COLUMNS)
     return pd.concat(frames, ignore_index=True).sort_values(["ticker", "date"], ignore_index=True)
+
+
+def iter_prices(directory: Path, files_per_chunk: int = 25) -> Iterator[pd.DataFrame]:
+    """The bars of `directory` a few tickers at a time (bounded memory; each ticker's rows by date)."""
+    files = sorted(directory.glob("*.parquet"))
+    for start in range(0, len(files), files_per_chunk):
+        yield pd.concat([pd.read_parquet(f) for f in files[start : start + files_per_chunk]], ignore_index=True)
 
 
 def last_dates(directory: Path, symbols: list[str]) -> dict[str, pd.Timestamp]:

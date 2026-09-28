@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 
 import pandas as pd
 
@@ -70,6 +71,42 @@ def ticker_features(
     return out
 
 
+def _chunk_table(frames: list[pd.DataFrame], cfg: Config) -> pd.DataFrame:
+    table = pd.concat(frames).rename_axis("date").reset_index()
+    table["total_score"] = total_score(table, cfg)
+    return table
+
+
+def iter_feature_chunks(
+    prices: pd.DataFrame,
+    benchmark: pd.DataFrame,
+    cfg: Config,
+    market: str,
+    fx: pd.DataFrame | None = None,
+    insider: pd.DataFrame | None = None,
+    institutional: pd.DataFrame | None = None,
+    tickers_per_chunk: int = 25,
+) -> Iterator[pd.DataFrame]:
+    """The features table as consecutive chunks of whole tickers (sorted by ticker), so a caller
+    can write it out without holding all of it; see compute_features for the arguments."""
+    bench = _by_date(benchmark)
+    fx_close = None if fx is None else _by_date(fx)["close"]
+    regime = market_regime(in_usd(bench, fx_close), cfg)
+    frames = []
+    covered_until = coverage_end(insider) if insider is not None else None
+    for ticker, bars in prices.groupby("ticker", sort=True):
+        tx = None if insider is None else (insider[insider["ticker"] == ticker], covered_until)
+        inst = None if institutional is None else institutional[institutional["ticker"] == ticker]
+        feats = ticker_features(_by_date(bars), bench, regime, cfg, market, fx_close, tx, inst)
+        feats.insert(0, "ticker", ticker)
+        frames.append(feats)
+        if len(frames) == tickers_per_chunk:
+            yield _chunk_table(frames, cfg)
+            frames = []
+    if frames:
+        yield _chunk_table(frames, cfg)
+
+
 def compute_features(
     prices: pd.DataFrame,
     benchmark: pd.DataFrame,
@@ -85,18 +122,7 @@ def compute_features(
     With `insider` (Form 4 transactions with a `ticker` column), insider features are added; with
     `institutional` (13F quarterly aggregates with a `ticker` column), institutional features.
     """
-    bench = _by_date(benchmark)
-    fx_close = None if fx is None else _by_date(fx)["close"]
-    regime = market_regime(in_usd(bench, fx_close), cfg)
-    frames = []
-    covered_until = coverage_end(insider) if insider is not None else None
-    for ticker, bars in prices.groupby("ticker", sort=True):
-        tx = None if insider is None else (insider[insider["ticker"] == ticker], covered_until)
-        inst = None if institutional is None else institutional[institutional["ticker"] == ticker]
-        feats = ticker_features(_by_date(bars), bench, regime, cfg, market, fx_close, tx, inst)
-        feats.insert(0, "ticker", ticker)
-        frames.append(feats)
-    table = pd.concat(frames).rename_axis("date").reset_index()
-    table["total_score"] = total_score(table, cfg)
+    chunks = iter_feature_chunks(prices, benchmark, cfg, market, fx, insider, institutional)
+    table = pd.concat(list(chunks), ignore_index=True)
     logger.info("Features: %d rows, %d tickers, %d columns", len(table), table["ticker"].nunique(), table.shape[1])
     return table

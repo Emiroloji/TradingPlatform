@@ -63,9 +63,9 @@ def signals_tab(cfg, market: str) -> None:
 
 
 def stock_tab(cfg, market: str) -> None:
-    features = store.read_features(cfg, market)
-    tickers = sorted(features["ticker"].unique())
+    tickers = sorted(store.read_features(cfg, market, columns=["ticker"])["ticker"].unique())
     ticker = st.selectbox("Hisse", tickers)
+    features = store.read_features_ticker(cfg, market, ticker)  # one ticker, not the whole table (long-lived process)
     years = st.slider("Dönem (yıl)", 1, cfg.data.history_years, 1)
     prices = store.read_prices(store.clean_dir(cfg, market), [ticker])
     start = prices["date"].max() - pd.DateOffset(years=years)

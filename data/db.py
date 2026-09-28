@@ -8,9 +8,11 @@ Wide tables (features, signals) gain new columns automatically when the pipeline
 
 from __future__ import annotations
 
-import io
+import itertools
 import logging
 import os
+import select
+from collections.abc import Iterable, Iterator
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -21,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _SQL_TYPES = {"b": "BOOLEAN", "i": "DOUBLE PRECISION", "u": "DOUBLE PRECISION", "f": "DOUBLE PRECISION", "M": "TIMESTAMP"}
 KEYS = ["market", "ticker", "date"]
+COPY_CHUNK_ROWS = 10_000
 
 
 def database_url(cfg: Config) -> str | None:
@@ -49,21 +52,60 @@ def _ensure_table(cur, table: str, df: pd.DataFrame, hypertable: bool, cfg: Conf
             cur.execute(f'ALTER TABLE "{table}" ADD COLUMN "{c}" {_sql_type(df[c])}')
 
 
-def replace_market(conn, table: str, market: str, df: pd.DataFrame, cfg: Config, hypertable: bool = False) -> int:
-    """Swap one market's rows in `table` for `df` (same transaction as the caller's commit)."""
+def _flushing_writer(cursor):
+    """COPY writer that sends each chunk before taking the next. On Linux psycopg leaves COPY data in
+    libpq's output buffer, which then grows by the whole table when the server is slower than we are."""
+    from psycopg.copy import LibpqWriter
+
+    class FlushingWriter(LibpqWriter):
+        def write(self, data) -> None:
+            super().write(data)
+            pgconn = self.connection.pgconn
+            while pgconn.flush() == 1:  # 1: data still pending because the socket is full
+                select.select([], [pgconn.socket], [])
+
+    return FlushingWriter(cursor)
+
+
+def _prepare(df: pd.DataFrame, market: str) -> pd.DataFrame:
     df = df.assign(market=market)
     df = df[KEYS + [c for c in df.columns if c not in KEYS]]
     df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
+
+
+def _chunks(data: pd.DataFrame | Iterable[pd.DataFrame]) -> Iterator[pd.DataFrame]:
+    """A frame is cut into COPY_CHUNK_ROWS slices (an empty frame still yields itself once)."""
+    if isinstance(data, pd.DataFrame):
+        for start in range(0, max(len(data), 1), COPY_CHUNK_ROWS):
+            yield data.iloc[start : start + COPY_CHUNK_ROWS]
+    else:
+        yield from data
+
+
+def replace_market(
+    conn, table: str, market: str, data: pd.DataFrame | Iterable[pd.DataFrame], cfg: Config, hypertable: bool = False
+) -> int:
+    """Swap one market's rows in `table` for `data` (same transaction as the caller's commit).
+
+    `data` is a frame or an iterable of frames with the same columns; rows are sent in chunks so
+    memory stays bounded (the whole US features table as one CSV string took gigabytes)."""
+    chunks = _chunks(data)
+    first = next(chunks, None)
+    if first is None:
+        return 0
+    first = _prepare(first, market)
+    cols = ", ".join(f'"{c}"' for c in first.columns)
+    rows = 0
     with conn.cursor() as cur:
-        _ensure_table(cur, table, df, hypertable, cfg)
+        _ensure_table(cur, table, first, hypertable, cfg)
         cur.execute(f'DELETE FROM "{table}" WHERE market = %s', (market,))
-        buf = io.StringIO()
-        df.to_csv(buf, index=False, header=False, na_rep="\\N")
-        buf.seek(0)
-        cols = ", ".join(f'"{c}"' for c in df.columns)
-        with cur.copy(f'COPY "{table}" ({cols}) FROM STDIN WITH (FORMAT csv, NULL \'\\N\')') as copy:
-            copy.write(buf.read())
-    return len(df)
+        statement = f'COPY "{table}" ({cols}) FROM STDIN WITH (FORMAT csv, NULL \'\\N\')'
+        with cur.copy(statement, writer=_flushing_writer(cur)) as copy:
+            for df in itertools.chain([first], (_prepare(c, market) for c in chunks)):
+                copy.write(df.to_csv(index=False, header=False, na_rep="\\N"))
+                rows += len(df)
+    return rows
 
 
 def sync_market(cfg: Config, market: str) -> dict[str, int] | None:
@@ -78,18 +120,19 @@ def sync_market(cfg: Config, market: str) -> dict[str, int] | None:
         logger.info("Database sync skipped (disabled or DATABASE_URL unset)")
         return None
     tables = {
-        "prices": (store.read_prices(store.clean_dir(cfg, market)), True),
-        "features": (store.read_features(cfg, market), False),
+        # prices and features are streamed: neither table is ever whole in memory
+        "prices": (store.iter_prices(store.clean_dir(cfg, market)), True),
+        "features": (store.iter_features(cfg, market, COPY_CHUNK_ROWS), False),
         "signals": (read_journal(cfg, market), False),
     }
     counts = {}
     with psycopg.connect(url) as conn:
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
-        for table, (df, hyper) in tables.items():
-            if df.empty:
+        for table, (data, hyper) in tables.items():
+            if isinstance(data, pd.DataFrame) and data.empty:
                 continue
-            counts[table] = replace_market(conn, table, market, df, cfg, hypertable=hyper)
+            counts[table] = replace_market(conn, table, market, data, cfg, hypertable=hyper)
         conn.commit()
     logger.info("Database [%s]: %s", market, counts)
     return counts

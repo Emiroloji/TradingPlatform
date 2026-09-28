@@ -1,9 +1,12 @@
 # Temkinli hisse tarama — tek imaj; compose'daki scheduler ve dashboard servisleri ortak kullanır.
 FROM python:3.13-slim
 
+# ARROW_DEFAULT_MEMORY_POOL=system: Arrow's own allocator keeps freed parquet buffers; the system one
+# returns them (measured ~50 MB lower peak on the daily flow)
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    ARROW_DEFAULT_MEMORY_POOL=system \
     TZ=Europe/Istanbul
 
 # libgomp1: LightGBM; tzdata: zamanlayıcı saat dilimi
