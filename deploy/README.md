@@ -2,9 +2,11 @@
 
 ## A. Dokploy (önerilen)
 
-Depodaki `Dockerfile` + `docker-compose.yml` üç servis kurar: **db** (TimescaleDB, dışarı kapalı),
-**scheduler** (ilk açılışta `bootstrap`, sonra hafta içi günlük akış + aylık yeniden eğitim),
-**dashboard** (Streamlit, şifreli). Veriler adlandırılmış volume'larda kalıcıdır (yeniden deploy'da silinmez).
+Depodaki `Dockerfile` + `docker-compose.yml` üç servis kurar: **borsa-db** (TimescaleDB, dışarı kapalı),
+**borsa-scheduler** (ilk açılışta `bootstrap`, sonra hafta içi günlük akış + aylık yeniden eğitim),
+**borsa-dashboard** (Streamlit, şifreli). Veriler adlandırılmış volume'larda kalıcıdır (yeniden deploy'da silinmez).
+Servis adları "borsa-" ön eklidir: sunucudaki diğer projelerle aynı Dokploy ağında "db" gibi ortak bir ad
+yanlış konteynere çözümlenebilir.
 
 1. Dokploy → **Projects** → yeni proje → **Create Service → Compose**.
 2. **Provider:** GitHub → depo `Emiroloji/TradingPlatform` (özel depo: Dokploy GitHub uygulamasına erişim ver),
@@ -22,10 +24,14 @@ Depodaki `Dockerfile` + `docker-compose.yml` üç servis kurar: **db** (Timescal
    ```
 4. **Deploy**. İlk açılışta scheduler bootstrap'i çalıştırır (~10 dk: BIST + S&P 500, SEC Form 4 ve 13F).
    Loglarda `Scheduled bist: weekdays 18:45` görünce hazırdır.
-5. **Domains** sekmesi → servis `dashboard`, port `8501`, HTTPS açık → alan adın. Panel şifreyi sorar.
+5. **Domains** sekmesi → servis `borsa-dashboard`, port `8501`, HTTPS açık → alan adın. Panel şifreyi sorar.
 6. Kontrol: Telegram'a hafta içi 18:45'ten sonra BIST, 23:45'ten sonra ABD raporu gelir.
 
-Kaynak ihtiyacı: bootstrap ve ABD özellik hesabı sırasında ~2–3 GB RAM; disk ~3 GB (veri + veritabanı).
+Kaynak ihtiyacı (Linux konteynerde ölçüldü, BIST + S&P 500): günlük akış tepe ~0,9 GB, aylık eğitim ve
+bootstrap'in en ağır adımı ~1,5 GB, zamanlayıcı boşta ~260 MB; disk ~3 GB (veri + veritabanı).
+Her zamanlanmış iş ve her bootstrap adımı ayrı alt süreçte çalışır, bittiğinde belleği işletim sistemine
+döner. Compose'daki sınırlar: borsa-scheduler 1600 MB, borsa-db 512 MB, borsa-dashboard 512 MB.
+Alt süreç beklenmedik şekilde ölürse (ör. bellek yetmezse) Telegram'a uyarı gider.
 Yerelde doğrulandı: imaj derleniyor, bootstrap yereldeki sonuçları birebir üretiyor, 130 test konteynerde geçiyor.
 
 ---

@@ -10,3 +10,16 @@ def test_scheduler_has_daily_and_monthly_jobs_per_market(cfg):
     fields = {f.name: str(f) for f in daily.fields}
     assert fields["day_of_week"] == "mon-fri" and fields["hour"] == "18" and fields["minute"] == "45"
     assert str(daily.timezone) == cfg.schedule.timezone
+
+
+def test_isolated_job_crash_sends_alert(cfg, monkeypatch):
+    import sys
+
+    import report.telegram_bot
+
+    alerts = []
+    monkeypatch.setattr(report.telegram_bot, "send_alert", lambda text, cfg: alerts.append(text))
+    main._run_isolated(str.upper, "bist")  # a child that returns normally: no alert
+    assert alerts == []
+    main._run_isolated(sys.exit, "bist")  # a child that dies with a non-zero code, as a killed one would
+    assert len(alerts) == 1 and alerts[0].startswith("BIST") and "çıkış kodu 1" in alerts[0]

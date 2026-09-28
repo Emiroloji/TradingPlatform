@@ -62,3 +62,14 @@ def test_compute_features_columns(cfg):
     assert required <= set(table.columns)
     assert table[["date", "ticker"]].duplicated().sum() == 0
     assert table["total_score"].dropna().between(0, 100).all()
+
+
+def test_feature_chunks_hold_whole_tickers_and_match_the_table(cfg):
+    from features import iter_feature_chunks
+
+    prices = pd.concat([_long(make_bars(seed=s), f"T{s}.IS") for s in range(20, 25)])
+    bench = _long(make_bars(seed=12), "XU100.IS")
+    chunks = list(iter_feature_chunks(prices, bench, cfg, "bist", tickers_per_chunk=2))
+    assert [c["ticker"].nunique() for c in chunks] == [2, 2, 1]
+    assert len({t for c in chunks for t in c["ticker"].unique()}) == 5  # no ticker split across chunks
+    pd.testing.assert_frame_equal(pd.concat(chunks, ignore_index=True), compute_features(prices, bench, cfg, "bist"))

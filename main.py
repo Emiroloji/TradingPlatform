@@ -20,10 +20,10 @@ from config import Config, load_config
 from data import store
 from data.clean import clean_prices
 from data.fetch import fetch_prices, load_universe
-from features import compute_features
+from features import iter_feature_chunks
 from model.labels import make_labels_frame
 from model.predict import load_oos_predictions
-from model.train import registry_for, save_artifact, set_approval, train_walk_forward
+from model.train import registry_for, save_artifact, set_approval, train_walk_forward, training_columns
 from signals.filter import apply_conservative_filter, ml_signals, observation_candidates, rule_based_signals, setup_ok
 
 logger = logging.getLogger("borsa")
@@ -156,17 +156,26 @@ def features_market(cfg: Config, market: str) -> None:
         from data.institutional import read_institutional
 
         institutional = read_institutional(cfg, market)
-    table = compute_features(prices[~is_bench & ~is_fx], prices[is_bench], cfg, market, fx, insider, institutional)
-    path = store.write_features(table, cfg, market)
+    chunks = iter_feature_chunks(prices[~is_bench & ~is_fx], prices[is_bench], cfg, market, fx, insider, institutional)
+    stats = {"rows": 0, "tickers": 0, "first": None}
 
-    latest = table[table["date"] == table["date"].max()]
+    def counted(chunks):
+        for chunk in chunks:
+            stats["rows"] += len(chunk)
+            stats["tickers"] += chunk["ticker"].nunique()  # chunks hold whole tickers
+            first = chunk["date"].min()
+            stats["first"] = first if stats["first"] is None else min(stats["first"], first)
+            yield chunk
+
+    # written chunk by chunk: the full US table never sits in memory (it did, at ~1.5 GB peak)
+    path, latest = store.write_features_chunks(counted(chunks), cfg, market)
     logger.info(
         "[%s] features: %d rows, %d tickers, %s → %s; latest day %s: regime=%s, %d liquid, %d total_score>=%s",
         market,
-        len(table),
-        table["ticker"].nunique(),
-        table["date"].min().date(),
-        table["date"].max().date(),
+        stats["rows"],
+        stats["tickers"],
+        stats["first"].date(),
+        latest["date"].max().date(),
         latest["date"].max().date(),
         latest["regime"].iloc[0],
         int(latest["liquidity_ok"].sum()),
@@ -306,12 +315,15 @@ def _baseline_report(cfg: Config, market: str, runs: dict, periods: dict, tried:
 
 def train_market(cfg: Config, market: str) -> None:
     mcfg = cfg.markets[market]
-    features = store.read_features(cfg, market)
+    tickers = store.read_features(cfg, market, columns=["ticker"])["ticker"].unique()
     prices = store.read_prices(store.clean_dir(cfg, market))
     bench = prices[prices["ticker"] == mcfg.benchmark]
-    stocks = prices[prices["ticker"].isin(features["ticker"].unique())]
-    labels = make_labels_frame(stocks, bench, cfg)
-    art = train_walk_forward(features, labels, cfg)
+    labels = make_labels_frame(prices[prices["ticker"].isin(tickers)], bench, cfg)
+    del prices, bench
+    # only the columns training uses, and no reference kept here, so train_walk_forward can free it
+    available = set(store.feature_columns(cfg, market))
+    columns = [c for c in training_columns(cfg) if c in available]
+    art = train_walk_forward(store.read_features(cfg, market, columns=columns), labels, cfg)
     path = save_artifact(art, registry_for(market))
     logger.info("[%s] model %s saved to %s", market, art.version, path)
     logger.info("[%s] folds:\n%s", market, art.folds.to_string(index=False))
@@ -552,10 +564,10 @@ def run_market(cfg: Config, market: str) -> Path:
         fetch_market(cfg, market)
         step = "özellikler"
         features_market(cfg, market)
-        features = store.read_features(cfg, market)
+        today = store.read_features_day(cfg, market)
         prices = store.read_prices(store.clean_dir(cfg, market))
         bench = prices[prices["ticker"] == mcfg.benchmark]
-        last_day = features["date"].max()
+        last_day = today["date"].max()
         expected = pd.Timestamp(last_complete_session(cfg, market))
         stale = last_day < expected and expected.dayofweek < 5
         if stale:
@@ -567,7 +579,6 @@ def run_market(cfg: Config, market: str) -> Path:
 
         # [3]-[5] filters on the latest day (never re-issued for a stale day)
         step = "filtre"
-        today = features[features["date"] == last_day].copy()
         universe = load_universe(mcfg, cfg).set_index("symbol")
         today["sector"] = today["ticker"].map(universe["sector"])
         ml_approved, ml_note, model = _ml_state(market)
@@ -674,6 +685,9 @@ def cmd_db_sync(cfg: Config) -> None:
         sync_market(cfg, market)
 
 
+BOOTSTRAP_STEPS = (fetch_market, features_market, backtest_market, train_market, ml_backtest_market, sync_database)
+
+
 def cmd_bootstrap(cfg: Config) -> None:
     """First start on a fresh server: build data, features, setup backtest and model for every
     market that has no features yet. Does nothing on later restarts."""
@@ -682,17 +696,69 @@ def cmd_bootstrap(cfg: Config) -> None:
             logger.info("[%s] bootstrap: features exist, skipping", market)
             continue
         logger.info("[%s] bootstrap: building data, features, backtests and model", market)
-        fetch_market(cfg, market)
-        features_market(cfg, market)
-        backtest_market(cfg, market)
-        train_market(cfg, market)
-        ml_backtest_market(cfg, market)
-        sync_database(cfg, market)
+        for step in BOOTSTRAP_STEPS:
+            # one process per step: memory a step leaves behind is not carried into the next one
+            # (in one process the US steps together outgrew the scheduler's memory limit)
+            code = _run_child(_step_job, step.__name__, market)
+            if code != 0:
+                raise RuntimeError(f"[{market}] bootstrap step {step.__name__} failed (exit code {code})")
 
 
 def cmd_run(cfg: Config) -> None:
     for market in cfg.enabled_markets():
         run_market(cfg, market)
+
+
+def _daily_job(market: str) -> None:
+    cfg = load_config()  # re-read config so edits apply without a restart
+    setup_logging(cfg)
+    try:
+        run_market(cfg, market)
+    except Exception:
+        logger.exception("Scheduled run for %s failed", market)  # already alerted
+
+
+def _retrain_job(market: str) -> None:
+    cfg = load_config()
+    setup_logging(cfg)
+    try:
+        retrain_market(cfg, market)
+    except Exception as exc:
+        logger.exception("Monthly retrain for %s failed", market)
+        from report.telegram_bot import send_alert
+
+        send_alert(f"{market.upper()} aylık yeniden eğitim başarısız: {type(exc).__name__}", cfg)
+
+
+def _step_job(step: str, market: str) -> None:
+    cfg = load_config()
+    setup_logging(cfg)
+    try:
+        globals()[step](cfg, market)
+    except Exception:
+        logger.exception("[%s] %s failed", market, step)
+        raise SystemExit(1) from None
+
+
+def _run_child(target, *args) -> int:
+    """Run target(*args) in a fresh process and return its exit code. pandas/LightGBM memory goes
+    back to the OS when the child exits, instead of staying with a long-lived parent."""
+    import multiprocessing
+
+    proc = multiprocessing.get_context("spawn").Process(target=target, args=args, name=f"{target.__name__}-{args[-1]}")
+    proc.start()
+    proc.join()
+    return proc.exitcode
+
+
+def _run_isolated(job, market: str) -> None:
+    """Run a scheduled job in a child process (the server hosts other apps; see _run_child)."""
+    code = _run_child(job, market)
+    if code != 0:  # the job catches its own errors, so this is a crash or a kill (e.g. out of memory)
+        logger.error("%s for %s exited with code %s", job.__name__, market, code)
+        from report.telegram_bot import send_alert
+
+        send_alert(f"{market.upper()} {job.__name__} süreci beklenmedik şekilde durdu (çıkış kodu {code}; bellek yetmemiş olabilir).", load_config())
 
 
 def build_scheduler(cfg: Config):
@@ -704,29 +770,16 @@ def build_scheduler(cfg: Config):
     for market in cfg.enabled_markets():
         hour, minute = map(int, getattr(cfg.schedule, f"{market}_run_time").split(":"))
         trigger = CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone=cfg.schedule.timezone)
-
-        def job(m: str = market) -> None:
-            try:
-                run_market(load_config(), m)  # re-read config so edits apply without a restart
-            except Exception:
-                logger.exception("Scheduled run for %s failed", m)  # already alerted; keep the scheduler alive
-
-        scheduler.add_job(job, trigger, id=f"daily_{market}", misfire_grace_time=3600, coalesce=True)
+        scheduler.add_job(
+            _run_isolated, trigger, args=[_daily_job, market], id=f"daily_{market}", misfire_grace_time=3600, coalesce=True
+        )
         logger.info("Scheduled %s: weekdays %02d:%02d %s", market, hour, minute, cfg.schedule.timezone)
 
         r_hour, r_minute = map(int, cfg.schedule.retrain_time.split(":"))
         monthly = CronTrigger(day=cfg.schedule.retrain_day_of_month, hour=r_hour, minute=r_minute, timezone=cfg.schedule.timezone)
-
-        def retrain_job(m: str = market) -> None:
-            try:
-                retrain_market(load_config(), m)
-            except Exception as exc:
-                logger.exception("Monthly retrain for %s failed", m)
-                from report.telegram_bot import send_alert
-
-                send_alert(f"{m.upper()} aylık yeniden eğitim başarısız: {type(exc).__name__}", load_config())
-
-        scheduler.add_job(retrain_job, monthly, id=f"retrain_{market}", misfire_grace_time=6 * 3600, coalesce=True)
+        scheduler.add_job(
+            _run_isolated, monthly, args=[_retrain_job, market], id=f"retrain_{market}", misfire_grace_time=6 * 3600, coalesce=True
+        )
         logger.info("Scheduled %s retrain: day %d of each month %s", market, cfg.schedule.retrain_day_of_month, cfg.schedule.retrain_time)
     return scheduler
 

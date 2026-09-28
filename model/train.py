@@ -46,6 +46,15 @@ def feature_names(cfg: Config) -> list[str]:
     )
 
 
+def training_columns(cfg: Config) -> list[str]:
+    """Feature-table columns train_walk_forward reads (market-specific ones may be absent)."""
+    from features.insider import COLUMNS as INSIDER_COLUMNS
+    from features.institutional import COLUMNS as INSTITUTIONAL_COLUMNS
+
+    base = [c for c in feature_names(cfg) if c != "regime_code"]
+    return ["date", "ticker", "liquidity_ok", "regime", *base, *INSIDER_COLUMNS, *INSTITUTIONAL_COLUMNS]
+
+
 def design_matrix(features: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """Base features plus market-specific ones present as columns (e.g. US insider features).
     Column presence is fixed per market, never per row, so it cannot leak future information."""
@@ -96,9 +105,11 @@ def train_walk_forward(features: pd.DataFrame, labels: pd.DataFrame, cfg: Config
     Trains on liquid rows with a known label; predicts every row of each test window.
     """
     data = features.merge(labels, on=["date", "ticker"], how="left")
+    del features  # frees the table when the caller passed it without keeping a reference
     trainable = data["liquidity_ok"].astype(bool) & data["label"].notna()
     X_all = design_matrix(data, cfg)
     names = list(X_all.columns)
+    data = data[["date", "ticker", "label", "label_end"]]  # the feature columns now live in X_all
 
     fold_rows, preds, models, gains = [], [], [], []
     windows = fold_windows(pd.Timestamp(cfg.model.first_test_start), data["date"].max(), cfg)
